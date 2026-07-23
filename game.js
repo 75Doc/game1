@@ -38,12 +38,13 @@ const CUSTOMER_NAMES = [
   'Drew', 'Robin', 'Charlie', 'Skyler', 'Quinn', 'Reese', 'Avery', 'Rowan',
   'Emerson', 'Dakota', 'Finley', 'Harper',
 ];
-// Roughly 85% bookings / 15% walk-ins overall: ~12.5 bookings/day vs. ~2 walk-ins/day.
-const WALKIN_MIN_GAP = 300; // game-minutes between walk-in spawns
-const WALKIN_MAX_GAP = 600;
+// Roughly 85% bookings / 15% walk-ins overall: ~16 bookings/day vs. ~2.6 walk-ins/day
+// (30% up from the original ~12.5/~2, same split).
+const WALKIN_MIN_GAP = 230; // game-minutes between walk-in spawns
+const WALKIN_MAX_GAP = 460;
 const WALKIN_COLD_HOUR_GAP_MULTIPLIER = 3.5; // outside hot hours, walk-ins arrive this much less often
-const BOOKINGS_MIN_PER_DAY = 11;
-const BOOKINGS_MAX_PER_DAY = 14;
+const BOOKINGS_MIN_PER_DAY = 14;
+const BOOKINGS_MAX_PER_DAY = 18;
 const MAX_QUEUE_CARDS_SHOWN = 6;
 
 // Hot hours: three 2-hour rushes (08-10, 12-14, 17-19) that together draw ~70% of arrivals
