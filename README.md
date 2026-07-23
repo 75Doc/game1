@@ -68,21 +68,28 @@ mobile, and claude.ai — so GitHub (`75Doc/game1`) is the source of truth:
 ## Status
 
 - **Front Desk**: a mix of pre-bookings (~85%) and walk-ins (~15%) arrive over
-  the day, checked in on the counter laptop. Tapping a queue entry opens a
-  check-in dialog — mark which gear they own vs. need to rent (prices are
-  rough real-world dive-shop rates, shown per-type along with how many clean
-  units are left); rentals are charged immediately, and a type with none
-  clean can't be rented until it's rinsed. Queued customers who wait too long
-  (a hidden per-customer patience timer) leave without checking in. A
-  **marketing campaign** ($100) can be run from here for an immediate burst
-  of walk-ins plus a 4-hour boosted walk-in rate.
-- **Dive Ops**: drag checked-in customers into a new group (1-6, guide is
-  automatic but not free), pick a dive count (1-3), dispatch. The guide costs
-  a fixed fee plus a per-dive fee (each half a dive's price, so $55 for a
-  1-dive group), charged on dispatch regardless of outcome. Dispatching plays
-  a little walk-to-car-and-drive-off animation; the group pays out
-  ($55/customer/dive — tanks/guide/boat, gear is billed separately at
-  check-in) automatically when the car drives back on return.
+  the day, checked in on the counter laptop. Arrivals aren't spread evenly —
+  three "hot hours" (08-10, 12-14, 17-19, flagged with a 🔥 in the header)
+  draw about 70% of both bookings and walk-ins, the rest trickle in across
+  the remaining open hours. Tapping a queue entry opens a check-in dialog —
+  mark which gear they own vs. need to rent (prices are rough real-world
+  dive-shop rates, shown per-type along with how many clean units are left);
+  rentals are charged immediately, and a type with none clean can't be
+  rented until it's rinsed. Queued customers who wait too long (a hidden
+  per-customer patience timer) leave without checking in — their card
+  flashes coral with a "Leaving soon!" warning once their patience is
+  running low. A **marketing campaign** ($100) can be run from here for an
+  immediate burst of walk-ins plus a 4-hour boosted walk-in rate.
+- **Dive Ops**: drag checked-in customers into a new group (1-6), pick a
+  dive count (1-3), dispatch. The shop starts with **one guide**, so only
+  one group can be out diving at a time; **hire more guides** ($120 each)
+  to run multiple groups simultaneously — dispatch is blocked with "No guide
+  available" once every guide is out. The guide also costs a fixed fee plus
+  a per-dive fee (each half a dive's price, so $55 for a 1-dive group),
+  charged on dispatch regardless of outcome. Dispatching plays a little
+  walk-to-car-and-drive-off animation; the group pays out ($55/customer/dive
+  — tanks/guide/boat, gear is billed separately at check-in) automatically
+  when the car drives back on return.
 - **Equipment**: the shop owns 10 physical units of each rental type (mask &
   fins, wetsuit, BCD, regulator, dive computer, torch). Renting one out wears
   it and leaves it dirty on return — it must be **rinsed** before it can go

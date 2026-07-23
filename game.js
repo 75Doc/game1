@@ -41,13 +41,32 @@ const CUSTOMER_NAMES = [
 // Roughly 85% bookings / 15% walk-ins overall: ~12.5 bookings/day vs. ~2 walk-ins/day.
 const WALKIN_MIN_GAP = 300; // game-minutes between walk-in spawns
 const WALKIN_MAX_GAP = 600;
+const WALKIN_COLD_HOUR_GAP_MULTIPLIER = 3.5; // outside hot hours, walk-ins arrive this much less often
 const BOOKINGS_MIN_PER_DAY = 11;
 const BOOKINGS_MAX_PER_DAY = 14;
 const MAX_QUEUE_CARDS_SHOWN = 6;
 
+// Hot hours: three 2-hour rushes (08-10, 12-14, 17-19) that together draw ~70% of arrivals
+// (both bookings and walk-ins), expressed as [start, end) offsets in minutes from the 08:00 open.
+const HOT_HOUR_WINDOWS = [[0, 120], [240, 360], [540, 660]];
+const HOT_ARRIVAL_SHARE = 0.7;
+const COLD_HOUR_WINDOWS = (() => {
+  const ranges = [];
+  let cursor = 0;
+  for (const [start, end] of HOT_HOUR_WINDOWS) {
+    if (start > cursor) ranges.push([cursor, start]);
+    cursor = end;
+  }
+  const openWindow = NIGHT_CUTOFF_MIN - DAY_START_MIN;
+  if (cursor < openWindow) ranges.push([cursor, openWindow]);
+  return ranges;
+})();
+const COLD_HOUR_TOTAL_MINUTES = COLD_HOUR_WINDOWS.reduce((sum, [a, b]) => sum + (b - a), 0);
+
 // A queued (arrived, not-yet-checked-in) customer leaves if they wait too long.
 const QUEUE_PATIENCE_MIN_MINUTES = 90;
 const QUEUE_PATIENCE_MAX_MINUTES = 180;
+const QUEUE_PATIENCE_WARNING_MINUTES = 30; // below this, the queue card visibly warns they're about to leave
 
 // Rental gear offered at check-in. Prices are rough real-world dive-shop day rates.
 const RENTAL_ITEMS = [
@@ -92,6 +111,11 @@ const DIVE_OPS_REFRESH_MS = 1000; // how often the "back in Xm" timers repaint
 const GUIDE_COST_PER_GROUP = DIVE_PRICE_PER_DIVE * 0.5;
 const GUIDE_COST_PER_DIVE = DIVE_PRICE_PER_DIVE * 0.5;
 
+// Guides: each idle guide can take one group out at a time. Start with one; hire more to
+// run more groups simultaneously.
+const INITIAL_GUIDE_COUNT = 1;
+const GUIDE_HIRE_COST = 120;
+
 // --- Dispatch animation: little people walking to the car, car driving to the dock ---
 const PERSON_HEAD_COLOR = 0xf0c9a0;
 const PERSON_LEG_COLOR = 0x33302c;
@@ -132,6 +156,29 @@ function isNightPhase(totalMinutes) {
   return m >= NIGHT_CUTOFF_MIN || m < DAY_START_MIN;
 }
 
+/** Whether totalMinutes falls in one of the three hot-hour rushes (08-10, 12-14, 17-19). */
+function isHotHour(totalMinutes) {
+  const offset = minuteOfDay(totalMinutes) - DAY_START_MIN;
+  return HOT_HOUR_WINDOWS.some(([start, end]) => offset >= start && offset < end);
+}
+
+/** Picks a random minute-offset from today's 08:00 open, biased so ~70% of picks land in a
+ *  hot-hour window and the rest spread uniformly across the remaining open hours. */
+function pickArrivalOffsetMinutes() {
+  if (Math.random() < HOT_ARRIVAL_SHARE) {
+    const [start, end] = HOT_HOUR_WINDOWS[Math.floor(Math.random() * HOT_HOUR_WINDOWS.length)];
+    return randomBetween(start, end);
+  }
+  let r = Math.random() * COLD_HOUR_TOTAL_MINUTES;
+  for (const [start, end] of COLD_HOUR_WINDOWS) {
+    const len = end - start;
+    if (r < len) return start + r;
+    r -= len;
+  }
+  const last = COLD_HOUR_WINDOWS[COLD_HOUR_WINDOWS.length - 1];
+  return last[1];
+}
+
 // Business-day index ticks over at each 08:00 open, not at midnight.
 function dayIndex(totalMinutes) {
   return Math.floor((totalMinutes - DAY_START_MIN) / MINUTES_PER_DAY);
@@ -152,6 +199,7 @@ class MainScene extends Phaser.Scene {
     this.walkInTimer = randomBetween(WALKIN_MIN_GAP, WALKIN_MAX_GAP);
     this.frontDeskDirty = true;
     this.frontDeskListObjects = [];
+    this.frontDeskTweens = [];
     this.frontDeskRefreshAccumMs = 0;
     this.lastDayIndex = dayIndex(this.totalMinutes);
 
@@ -162,6 +210,7 @@ class MainScene extends Phaser.Scene {
     this.diveOpsDirty = true;
     this.diveOpsListObjects = [];
     this.diveOpsRefreshAccumMs = 0;
+    this.guideCount = INITIAL_GUIDE_COUNT; // each idle guide can take one group out at a time
 
     this.dispatchAnimating = false;
     this.stagingChipObjects = [];
@@ -415,19 +464,20 @@ class MainScene extends Phaser.Scene {
     const night = isNightPhase(this.totalMinutes);
     const day = dayIndex(this.totalMinutes) + 1;
     this.headerText.setText(`Day ${day}  •  $${this.money}`);
-    this.subHeaderText.setText(`${formatClock(this.totalMinutes)}  ${night ? '🌙 Night (fast-forward)' : '☀️ Open'}`);
+    let status = night ? '🌙 Night (fast-forward)' : '☀️ Open';
+    if (!night && isHotHour(this.totalMinutes)) status += '  •  🔥 Busy hour';
+    this.subHeaderText.setText(`${formatClock(this.totalMinutes)}  ${status}`);
   }
 
   // --- Front desk: bookings & walk-ins ----------------------------------------
 
   generateBookingsForToday() {
     const todayOpenAbsolute = dayIndex(this.totalMinutes) * MINUTES_PER_DAY + DAY_START_MIN;
-    const openWindow = NIGHT_CUTOFF_MIN - DAY_START_MIN;
     const count = Math.floor(randomBetween(BOOKINGS_MIN_PER_DAY, BOOKINGS_MAX_PER_DAY + 1));
 
     this.upcomingBookings = [];
     for (let i = 0; i < count; i++) {
-      const scheduledMinute = todayOpenAbsolute + randomBetween(0, openWindow);
+      const scheduledMinute = todayOpenAbsolute + pickArrivalOffsetMinutes();
       // Skip slots already in the past (relevant for day 1, which opens mid-window).
       if (scheduledMinute < this.totalMinutes) continue;
       this.upcomingBookings.push({
@@ -457,8 +507,9 @@ class MainScene extends Phaser.Scene {
     if (this.walkInTimer <= 0) {
       this.spawnWalkIn();
       const boosted = this.totalMinutes < this.marketingBoostUntil;
-      const gapMultiplier = boosted ? MARKETING_WALKIN_GAP_MULTIPLIER : 1;
-      this.walkInTimer = randomBetween(WALKIN_MIN_GAP, WALKIN_MAX_GAP) * gapMultiplier;
+      const marketingMultiplier = boosted ? MARKETING_WALKIN_GAP_MULTIPLIER : 1;
+      const hourMultiplier = isHotHour(this.totalMinutes) ? 1 : WALKIN_COLD_HOUR_GAP_MULTIPLIER;
+      this.walkInTimer = randomBetween(WALKIN_MIN_GAP, WALKIN_MAX_GAP) * marketingMultiplier * hourMultiplier;
     }
   }
 
@@ -655,6 +706,8 @@ class MainScene extends Phaser.Scene {
   }
 
   clearFrontDeskList() {
+    for (const tween of this.frontDeskTweens) tween.stop();
+    this.frontDeskTweens = [];
     for (const obj of this.frontDeskListObjects) obj.destroy();
     this.frontDeskListObjects = [];
   }
@@ -662,9 +715,19 @@ class MainScene extends Phaser.Scene {
   buildQueueCard(customer, topY) {
     const w = GAME_WIDTH - 32;
     const h = 56;
-    const container = this.createCard(GAME_WIDTH / 2, topY + h / 2, w, h, COLOR_CARD, COLOR_TEAL, 14);
+    const leavingSoon = customer.patienceMinutes <= QUEUE_PATIENCE_WARNING_MINUTES;
+
+    const container = this.createCard(GAME_WIDTH / 2, topY + h / 2, w, h, COLOR_CARD,
+      leavingSoon ? COLOR_CORAL : COLOR_TEAL, 14);
     container.setInteractive({ useHandCursor: true });
     container.on('pointerdown', () => this.openCheckInDialog(customer));
+
+    if (leavingSoon) {
+      const tween = this.tweens.add({
+        targets: container, alpha: 0.55, duration: 450, yoyo: true, repeat: -1, ease: 'Sine.easeInOut',
+      });
+      this.frontDeskTweens.push(tween);
+    }
 
     const avatarColor = customer.source === 'booking' ? COLOR_TEAL : COLOR_CORAL;
     this.addPersonAvatar(container, -(w / 2) + 30, avatarColor);
@@ -676,13 +739,17 @@ class MainScene extends Phaser.Scene {
     }).setOrigin(0, 0.5);
 
     const tag = customer.source === 'booking' ? 'Booking' : 'Walk-in';
-    const detailText = this.add.text(w / 2 - 16, 0, `${tag}  •  ${customer.diveCount} dive${customer.diveCount > 1 ? 's' : ''}`, {
+    const detailText = leavingSoon
+      ? '⏳ Leaving soon!'
+      : `${tag}  •  ${customer.diveCount} dive${customer.diveCount > 1 ? 's' : ''}`;
+    const detail = this.add.text(w / 2 - 16, 0, detailText, {
       fontFamily: 'sans-serif',
       fontSize: '12px',
-      color: COLOR_TEXT_DIM,
+      fontStyle: leavingSoon ? 'bold' : 'normal',
+      color: leavingSoon ? COLOR_CORAL : COLOR_TEXT_DIM,
     }).setOrigin(1, 0.5);
 
-    container.add([nameText, detailText]);
+    container.add([nameText, detail]);
     return container;
   }
 
@@ -1024,10 +1091,23 @@ class MainScene extends Phaser.Scene {
     this.diveOpsDirty = true;
   }
 
+  /** How many guides are currently idle (not already out with a group). */
+  idleGuideCount() {
+    return this.guideCount - this.dispatchedGroups.length;
+  }
+
+  hireGuide() {
+    if (this.money < GUIDE_HIRE_COST) return;
+    this.money -= GUIDE_HIRE_COST;
+    this.guideCount += 1;
+    this.diveOpsDirty = true;
+  }
+
   dispatchGroup() {
     if (this.dispatchAnimating) return;
     const { customers, diveCount } = this.groupBuilder;
     if (customers.length < MIN_GROUP_SIZE || customers.length > MAX_GROUP_SIZE) return;
+    if (this.idleGuideCount() <= 0) return; // no guide free to take this group out
 
     this.dispatchAnimating = true;
     if (this.dispatchBtnRef) this.dispatchBtnRef.disableInteractive();
@@ -1188,7 +1268,32 @@ class MainScene extends Phaser.Scene {
 
   renderDiveOps() {
     this.clearDiveOpsList();
-    let y = SAFE_TOP + 40;
+    let y = SAFE_TOP + 34;
+
+    // --- Guides: how many can take a group out right now, and hiring more --------
+    const idleGuides = this.idleGuideCount();
+    const guideInfo = this.add.text(24, y, `🧭 Guides: ${idleGuides} idle / ${this.guideCount} total`, {
+      fontFamily: 'sans-serif',
+      fontSize: '13px',
+      color: COLOR_TEXT,
+    }).setOrigin(0, 0.5);
+    this.diveOpsListObjects.push(guideInfo);
+
+    const canHire = this.money >= GUIDE_HIRE_COST;
+    const hireW = 132;
+    const hireBtn = this.createCard(GAME_WIDTH - 16 - hireW / 2, y, hireW, 30,
+      canHire ? COLOR_TEAL : COLOR_CARD_ALT, COLOR_TEAL, 8);
+    if (canHire) {
+      hireBtn.setInteractive({ useHandCursor: true });
+      hireBtn.on('pointerdown', () => this.hireGuide());
+    }
+    hireBtn.add(this.add.text(0, 0, `Hire guide $${GUIDE_HIRE_COST}`, {
+      fontFamily: 'sans-serif',
+      fontSize: '11px',
+      color: canHire ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
+    }).setOrigin(0.5));
+    this.diveOpsListObjects.push(hireBtn);
+    y += 34;
 
     // --- Available pool --------------------------------------------------------
     const poolLabel = this.add.text(24, y, `Checked in, available (${this.checkedIn.length})`, {
@@ -1241,14 +1346,6 @@ class MainScene extends Phaser.Scene {
     y += 26;
 
     const stagingTop = y - 6;
-
-    const guideChip = this.add.text(24, y, '🧭 Guide assigned automatically', {
-      fontFamily: 'sans-serif',
-      fontSize: '12px',
-      color: COLOR_TEXT_DIM,
-    });
-    this.diveOpsListObjects.push(guideChip);
-    y += 26;
 
     if (this.groupBuilder.customers.length === 0) {
       const hint = this.add.text(GAME_WIDTH / 2, y, 'Drag a checked-in customer up here (1-6 per group).', {
@@ -1306,7 +1403,8 @@ class MainScene extends Phaser.Scene {
     y += 20;
 
     // Dispatch button.
-    const canDispatch = this.groupBuilder.customers.length >= MIN_GROUP_SIZE;
+    const hasGuideFree = this.idleGuideCount() > 0;
+    const canDispatch = this.groupBuilder.customers.length >= MIN_GROUP_SIZE && hasGuideFree;
     const dispatchY = y + 24;
     const dispatchBtn = this.createCard(GAME_WIDTH / 2, dispatchY, GAME_WIDTH - 32, 44,
       canDispatch ? COLOR_TEAL : COLOR_CARD_ALT, COLOR_TEAL, 14);
@@ -1314,7 +1412,7 @@ class MainScene extends Phaser.Scene {
       dispatchBtn.setInteractive({ useHandCursor: true });
       dispatchBtn.on('pointerdown', () => this.dispatchGroup());
     }
-    const dispatchLabel = this.add.text(0, 0, 'Dispatch group', {
+    const dispatchLabel = this.add.text(0, 0, hasGuideFree ? 'Dispatch group' : 'No guide available', {
       fontFamily: 'sans-serif',
       fontSize: '14px',
       color: canDispatch ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
@@ -1396,7 +1494,11 @@ class MainScene extends Phaser.Scene {
       }
     }
 
-    if (this.activeTab === 'frontdesk' && this.totalMinutes < this.marketingBoostUntil) {
+    // Refresh periodically while there's a countdown to show: the campaign timer, or a
+    // queued customer's patience running low enough to warrant the "leaving soon" warning.
+    const needsFrontDeskTicking = this.totalMinutes < this.marketingBoostUntil
+      || this.queue.length > 0;
+    if (this.activeTab === 'frontdesk' && needsFrontDeskTicking) {
       this.frontDeskRefreshAccumMs += deltaMs;
       if (this.frontDeskRefreshAccumMs >= DIVE_OPS_REFRESH_MS) {
         this.frontDeskRefreshAccumMs = 0;
