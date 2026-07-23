@@ -1,0 +1,30 @@
+{
+  "name": "game1",
+  "version": "1.0.0",
+  "description": "Dive Center Tycoon - a 2D iOS-only management game built with Phaser + Vite",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview --host",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/75Doc/game1.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/75Doc/game1/issues"
+  },
+  "homepage": "https://github.com/75Doc/game1#readme",
+  "devDependencies": {
+    "vite": "^8.1.5"
+  },
+  "dependencies": {
+    "phaser": "^4.2.1"
+  }
+}
