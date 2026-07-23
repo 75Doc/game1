@@ -38,11 +38,26 @@ const CUSTOMER_NAMES = [
   'Drew', 'Robin', 'Charlie', 'Skyler', 'Quinn', 'Reese', 'Avery', 'Rowan',
   'Emerson', 'Dakota', 'Finley', 'Harper',
 ];
-const WALKIN_MIN_GAP = 20; // game-minutes between walk-in spawns
-const WALKIN_MAX_GAP = 50;
-const BOOKINGS_MIN_PER_DAY = 3;
-const BOOKINGS_MAX_PER_DAY = 5;
+// Roughly 85% bookings / 15% walk-ins overall: ~12.5 bookings/day vs. ~2 walk-ins/day.
+const WALKIN_MIN_GAP = 300; // game-minutes between walk-in spawns
+const WALKIN_MAX_GAP = 600;
+const BOOKINGS_MIN_PER_DAY = 11;
+const BOOKINGS_MAX_PER_DAY = 14;
 const MAX_QUEUE_CARDS_SHOWN = 6;
+
+// A queued (arrived, not-yet-checked-in) customer leaves if they wait too long.
+const QUEUE_PATIENCE_MIN_MINUTES = 90;
+const QUEUE_PATIENCE_MAX_MINUTES = 180;
+
+// Rental gear offered at check-in. Prices are rough real-world dive-shop day rates.
+const RENTAL_ITEMS = [
+  { key: 'mask_fins', label: 'Mask & Fins', price: 10 },
+  { key: 'wetsuit', label: 'Wetsuit', price: 15 },
+  { key: 'bcd', label: 'BCD', price: 20 },
+  { key: 'regulator', label: 'Regulator', price: 20 },
+  { key: 'computer', label: 'Dive Computer', price: 12 },
+  { key: 'weights', label: 'Weights', price: 5 },
+];
 
 // --- Dive ops: group assembly & dispatch ---------------------------------------
 const MIN_GROUP_SIZE = 1;
@@ -50,10 +65,20 @@ const MAX_GROUP_SIZE = 6;
 const MIN_GROUP_DIVES = 1;
 const MAX_GROUP_DIVES = 3;
 const DIVE_DURATION_MINUTES_PER_DIVE = 45; // game-minutes a group is away per dive
-const DIVE_PRICE_PER_DIVE = 25;            // revenue per customer per dive
+const DIVE_PRICE_PER_DIVE = 55;            // revenue per customer per dive (tanks/guide/boat; gear rental is separate)
 const MAX_POOL_CARDS_SHOWN = 5;
 const MAX_OUT_GROUPS_SHOWN = 4;
 const DIVE_OPS_REFRESH_MS = 1000; // how often the "back in Xm" timers repaint
+
+// --- Dispatch animation: little people walking to the car, car driving to the dock ---
+const PERSON_HEAD_COLOR = 0xf0c9a0;
+const PERSON_LEG_COLOR = 0x33302c;
+const CAR_PARK_X = 150;
+const CAR_PARK_Y = 858;
+const DISPATCH_WALK_MS = 900;
+const DISPATCH_WALK_STAGGER_MS = 130;
+const DISPATCH_DRIVE_MS = 700;
+const RETURN_DRIVE_MS = 700;
 
 const TABS = [
   { key: 'frontdesk', label: 'Front Desk' },
@@ -114,6 +139,14 @@ class MainScene extends Phaser.Scene {
     this.diveOpsDirty = true;
     this.diveOpsListObjects = [];
     this.diveOpsRefreshAccumMs = 0;
+
+    this.dispatchAnimating = false;
+    this.stagingChipObjects = [];
+    this.stagingChipPositions = []; // [{ x, y, source }] snapshot for the walk animation
+    this.dispatchBtnRef = null;
+
+    this.dialogObjects = [];
+    this.checkInDialogState = null; // { customer, rentals: Set<string> }
   }
 
   create() {
@@ -145,6 +178,10 @@ class MainScene extends Phaser.Scene {
     }).setOrigin(0.5, 0);
 
     this.diveOpsDecor = this.buildDiveOpsDecor();
+    this.carGraphic = this.createCarGraphic();
+    this.carGraphic.setPosition(CAR_PARK_X, CAR_PARK_Y);
+    this.carGraphic.setVisible(false);
+    this.frontDeskDecor = this.buildFrontDeskDecor();
 
     // Generate today's bookings up front since the game opens mid-day-1 at 08:00.
     this.generateBookingsForToday();
@@ -173,16 +210,37 @@ class MainScene extends Phaser.Scene {
     return container;
   }
 
-  /** A small colored circle with an initial, added as children of an existing card container. */
-  addAvatar(container, localX, letter, color) {
-    const circle = this.add.circle(localX, 0, 15, color);
-    const label = this.add.text(localX, 0, letter.toUpperCase(), {
-      fontFamily: 'sans-serif',
-      fontSize: '13px',
-      fontStyle: 'bold',
-      color: '#ffffff',
-    }).setOrigin(0.5);
-    container.add([circle, label]);
+  /** A small flat person silhouette (head + shirt-colored body + legs), centered at local (0,0). */
+  createPersonGraphic(shirtColor) {
+    const g = this.add.graphics();
+    g.fillStyle(PERSON_LEG_COLOR, 1);
+    g.fillRect(-6, 10, 4, 11);
+    g.fillRect(2, 10, 4, 11);
+    g.fillStyle(shirtColor, 1);
+    g.fillRoundedRect(-8, -7, 16, 18, 4);
+    g.fillStyle(PERSON_HEAD_COLOR, 1);
+    g.fillCircle(0, -15, 7);
+    return g;
+  }
+
+  /** A small standing person, added as a child of an existing card container. */
+  addPersonAvatar(container, localX, color) {
+    const person = this.createPersonGraphic(color);
+    person.setPosition(localX, 3).setScale(0.55);
+    container.add(person);
+  }
+
+  /** Simple flat car/jeep silhouette used for the dispatch/return animation. */
+  createCarGraphic() {
+    const g = this.add.graphics();
+    g.fillStyle(COLOR_CORAL, 1);
+    g.fillRoundedRect(-30, -12, 60, 20, 6);
+    g.fillStyle(0xffffff, 1);
+    g.fillRoundedRect(-15, -23, 26, 14, 4);
+    g.fillStyle(0x2b2b2b, 1);
+    g.fillCircle(-18, 10, 7);
+    g.fillCircle(18, 10, 7);
+    return g;
   }
 
   buildWaveDivider(y) {
@@ -228,6 +286,27 @@ class MainScene extends Phaser.Scene {
     return container;
   }
 
+  /** Simple check-in counter, anchored near the bottom of the canvas. Front Desk only. */
+  buildFrontDeskDecor() {
+    const baseY = 880;
+    const g = this.add.graphics();
+    g.fillStyle(0x8a6b4f, 1);
+    g.fillRoundedRect(40, baseY - 10, GAME_WIDTH - 80, 40, 8);
+    g.fillStyle(COLOR_TEAL, 1);
+    g.fillRoundedRect(70, baseY - 34, 140, 24, 6);
+
+    const label = this.add.text(140, baseY - 22, 'CHECK-IN', {
+      fontFamily: 'sans-serif',
+      fontSize: '12px',
+      fontStyle: 'bold',
+      color: '#ffffff',
+    }).setOrigin(0.5);
+
+    const container = this.add.container(0, 0, [g, label]);
+    container.setVisible(false);
+    return container;
+  }
+
   buildTabBar() {
     const barY = SAFE_TOP;
     const tabWidth = (GAME_WIDTH - 32) / TABS.length;
@@ -251,6 +330,9 @@ class MainScene extends Phaser.Scene {
   }
 
   setActiveTab(key) {
+    // Don't let a group's people walk off mid-animation because the tab changed underneath them.
+    if (this.dispatchAnimating && key !== this.activeTab) return;
+
     this.activeTab = key;
     for (const btn of this.tabButtons) {
       const active = btn.key === key;
@@ -263,6 +345,13 @@ class MainScene extends Phaser.Scene {
     this.clearDiveOpsList();
     this.panelContent.setText('');
     this.diveOpsDecor.setVisible(key === 'diveops');
+    this.carGraphic.setVisible(key === 'diveops');
+    this.frontDeskDecor.setVisible(key === 'frontdesk');
+    if (key === 'diveops') {
+      // Defensive reset in case a return-trip car animation was interrupted by leaving the tab.
+      this.tweens.killTweensOf(this.carGraphic);
+      this.carGraphic.setPosition(CAR_PARK_X, CAR_PARK_Y).setAlpha(1);
+    }
 
     if (key === 'frontdesk') {
       this.frontDeskDirty = true;
@@ -309,6 +398,7 @@ class MainScene extends Phaser.Scene {
       name: randomName(),
       diveCount: 1 + Math.floor(Math.random() * 3),
       source: 'walkin',
+      patienceMinutes: randomBetween(QUEUE_PATIENCE_MIN_MINUTES, QUEUE_PATIENCE_MAX_MINUTES),
     });
     this.frontDeskDirty = true;
   }
@@ -327,9 +417,21 @@ class MainScene extends Phaser.Scene {
 
     this.upcomingBookings = this.upcomingBookings.filter((b) => b.scheduledMinute > this.totalMinutes);
     for (const booking of arrived) {
+      booking.patienceMinutes = randomBetween(QUEUE_PATIENCE_MIN_MINUTES, QUEUE_PATIENCE_MAX_MINUTES);
       this.queue.push(booking);
     }
     this.frontDeskDirty = true;
+  }
+
+  /** Queued customers (arrived, not yet checked in) leave if they wait too long. */
+  updateQueuePatience(deltaGameMinutes) {
+    if (this.queue.length === 0) return;
+    for (const customer of this.queue) {
+      customer.patienceMinutes -= deltaGameMinutes;
+    }
+    const before = this.queue.length;
+    this.queue = this.queue.filter((c) => c.patienceMinutes > 0);
+    if (this.queue.length !== before) this.frontDeskDirty = true;
   }
 
   checkInCustomer(customerId) {
@@ -338,6 +440,137 @@ class MainScene extends Phaser.Scene {
     const [customer] = this.queue.splice(idx, 1);
     this.checkedIn.push(customer);
     this.frontDeskDirty = true;
+  }
+
+  // --- Check-in dialog: what gear the customer already has vs. needs to rent ------
+
+  openCheckInDialog(customer) {
+    if (this.checkInDialogState) return;
+    this.checkInDialogState = { customer, rentals: new Set() };
+    this.renderCheckInDialog();
+  }
+
+  closeCheckInDialog() {
+    for (const obj of this.dialogObjects) obj.destroy();
+    this.dialogObjects = [];
+    this.checkInDialogState = null;
+  }
+
+  toggleRentalItem(key) {
+    const { rentals } = this.checkInDialogState;
+    if (rentals.has(key)) rentals.delete(key);
+    else rentals.add(key);
+    this.renderCheckInDialog();
+  }
+
+  confirmCheckIn() {
+    const { customer, rentals } = this.checkInDialogState;
+    const total = RENTAL_ITEMS
+      .filter((item) => rentals.has(item.key))
+      .reduce((sum, item) => sum + item.price, 0);
+    customer.rentals = Array.from(rentals);
+    this.money += total;
+    this.closeCheckInDialog();
+    this.checkInCustomer(customer.id);
+  }
+
+  renderCheckInDialog() {
+    for (const obj of this.dialogObjects) obj.destroy();
+    this.dialogObjects = [];
+    const { customer, rentals } = this.checkInDialogState;
+
+    const overlay = this.add.rectangle(GAME_WIDTH / 2, GAME_HEIGHT / 2, GAME_WIDTH, GAME_HEIGHT, 0x000000, 0.5)
+      .setInteractive();
+    this.dialogObjects.push(overlay);
+
+    const rowHeight = 38;
+    const panelWidth = GAME_WIDTH - 48;
+    const panelHeight = 96 + RENTAL_ITEMS.length * rowHeight + 74;
+    const panelX = GAME_WIDTH / 2;
+    const panelY = GAME_HEIGHT / 2;
+    const panelTop = panelY - panelHeight / 2;
+
+    const panel = this.createCard(panelX, panelY, panelWidth, panelHeight, COLOR_CARD, COLOR_TEAL, 16);
+    this.dialogObjects.push(panel);
+
+    let y = panelTop + 26;
+    const title = this.add.text(panelX, y, `${customer.name} — check in`, {
+      fontFamily: 'sans-serif',
+      fontSize: '15px',
+      fontStyle: 'bold',
+      color: COLOR_TEXT,
+    }).setOrigin(0.5);
+    this.dialogObjects.push(title);
+    y += 22;
+
+    const subtitle = this.add.text(panelX, y, `Wants ${customer.diveCount} dive${customer.diveCount > 1 ? 's' : ''} — what gear do they have?`, {
+      fontFamily: 'sans-serif',
+      fontSize: '11px',
+      color: COLOR_TEXT_DIM,
+      align: 'center',
+      wordWrap: { width: panelWidth - 40 },
+    }).setOrigin(0.5, 0);
+    this.dialogObjects.push(subtitle);
+    y += 32;
+
+    for (const item of RENTAL_ITEMS) {
+      const renting = rentals.has(item.key);
+      const rowY = y + rowHeight / 2;
+
+      const label = this.add.text(panelX - panelWidth / 2 + 20, rowY, item.label, {
+        fontFamily: 'sans-serif',
+        fontSize: '13px',
+        color: COLOR_TEXT,
+      }).setOrigin(0, 0.5);
+      this.dialogObjects.push(label);
+
+      const toggleW = 96;
+      const toggle = this.createCard(panelX + panelWidth / 2 - 20 - toggleW / 2, rowY, toggleW, 28,
+        renting ? COLOR_CORAL : COLOR_CARD_ALT, COLOR_TEAL, 14);
+      toggle.setInteractive({ useHandCursor: true });
+      toggle.on('pointerdown', () => this.toggleRentalItem(item.key));
+      const toggleLabel = this.add.text(0, 0, renting ? `Rent $${item.price}` : 'Own', {
+        fontFamily: 'sans-serif',
+        fontSize: '11px',
+        color: renting ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
+      }).setOrigin(0.5);
+      toggle.add(toggleLabel);
+      this.dialogObjects.push(toggle);
+
+      y += rowHeight;
+    }
+
+    const total = RENTAL_ITEMS
+      .filter((item) => rentals.has(item.key))
+      .reduce((sum, item) => sum + item.price, 0);
+    y += 6;
+    const totalText = this.add.text(panelX, y, `Rental total: $${total}`, {
+      fontFamily: 'sans-serif',
+      fontSize: '13px',
+      fontStyle: 'bold',
+      color: COLOR_TEXT,
+    }).setOrigin(0.5, 0);
+    this.dialogObjects.push(totalText);
+    y += 34;
+
+    const btnY = y + 20;
+    const cancelBtn = this.createCard(panelX - panelWidth / 4, btnY, panelWidth / 2 - 32, 40, COLOR_CARD_ALT, COLOR_TEAL, 12);
+    cancelBtn.setInteractive({ useHandCursor: true });
+    cancelBtn.on('pointerdown', () => this.closeCheckInDialog());
+    const cancelLabel = this.add.text(0, 0, 'Cancel', {
+      fontFamily: 'sans-serif', fontSize: '13px', color: COLOR_TEXT,
+    }).setOrigin(0.5);
+    cancelBtn.add(cancelLabel);
+    this.dialogObjects.push(cancelBtn);
+
+    const confirmBtn = this.createCard(panelX + panelWidth / 4, btnY, panelWidth / 2 - 32, 40, COLOR_TEAL, COLOR_TEAL, 12);
+    confirmBtn.setInteractive({ useHandCursor: true });
+    confirmBtn.on('pointerdown', () => this.confirmCheckIn());
+    const confirmLabel = this.add.text(0, 0, 'Confirm', {
+      fontFamily: 'sans-serif', fontSize: '13px', color: COLOR_TEXT_ON_ACCENT,
+    }).setOrigin(0.5);
+    confirmBtn.add(confirmLabel);
+    this.dialogObjects.push(confirmBtn);
   }
 
   clearFrontDeskList() {
@@ -350,10 +583,10 @@ class MainScene extends Phaser.Scene {
     const h = 56;
     const container = this.createCard(GAME_WIDTH / 2, topY + h / 2, w, h, COLOR_CARD, COLOR_TEAL, 14);
     container.setInteractive({ useHandCursor: true });
-    container.on('pointerdown', () => this.checkInCustomer(customer.id));
+    container.on('pointerdown', () => this.openCheckInDialog(customer));
 
     const avatarColor = customer.source === 'booking' ? COLOR_TEAL : COLOR_CORAL;
-    this.addAvatar(container, -(w / 2) + 30, customer.name[0], avatarColor);
+    this.addPersonAvatar(container, -(w / 2) + 30, avatarColor);
 
     const nameText = this.add.text(-(w / 2) + 56, 0, customer.name, {
       fontFamily: 'sans-serif',
@@ -448,6 +681,9 @@ class MainScene extends Phaser.Scene {
   clearDiveOpsList() {
     for (const obj of this.diveOpsListObjects) obj.destroy();
     this.diveOpsListObjects = [];
+    this.stagingChipObjects = [];
+    this.stagingChipPositions = [];
+    this.dispatchBtnRef = null;
   }
 
   handlePoolCardDrop(customer, pointer) {
@@ -482,9 +718,53 @@ class MainScene extends Phaser.Scene {
   }
 
   dispatchGroup() {
+    if (this.dispatchAnimating) return;
     const { customers, diveCount } = this.groupBuilder;
     if (customers.length < MIN_GROUP_SIZE || customers.length > MAX_GROUP_SIZE) return;
 
+    this.dispatchAnimating = true;
+    if (this.dispatchBtnRef) this.dispatchBtnRef.disableInteractive();
+    for (const chip of this.stagingChipObjects) chip.setVisible(false);
+
+    const positions = this.stagingChipPositions;
+    positions.forEach((pos, i) => {
+      const color = pos.source === 'booking' ? COLOR_TEAL : COLOR_CORAL;
+      const person = this.createPersonGraphic(color);
+      const startX = GAME_WIDTH / 2 + (i - (positions.length - 1) / 2) * 24;
+      person.setPosition(startX, pos.y);
+
+      const bob = this.tweens.add({ targets: person, scaleY: 0.85, duration: 140, yoyo: true, repeat: -1 });
+      this.tweens.add({
+        targets: person,
+        x: CAR_PARK_X + Phaser.Math.Between(-12, 12),
+        y: CAR_PARK_Y,
+        duration: DISPATCH_WALK_MS,
+        delay: i * DISPATCH_WALK_STAGGER_MS,
+        ease: 'Sine.easeInOut',
+        onComplete: () => {
+          bob.stop();
+          person.destroy();
+        },
+      });
+    });
+
+    const totalWalkMs = DISPATCH_WALK_MS + (positions.length - 1) * DISPATCH_WALK_STAGGER_MS + 100;
+    this.time.delayedCall(totalWalkMs, () => {
+      this.tweens.add({
+        targets: this.carGraphic,
+        x: GAME_WIDTH + 60,
+        duration: DISPATCH_DRIVE_MS,
+        ease: 'Cubic.easeIn',
+        onComplete: () => {
+          this.carGraphic.setPosition(CAR_PARK_X, CAR_PARK_Y).setAlpha(1);
+          this.finalizeDispatch(customers, diveCount);
+          this.dispatchAnimating = false;
+        },
+      });
+    });
+  }
+
+  finalizeDispatch(customers, diveCount) {
     this.dispatchedGroups.push({
       id: this.nextGroupId++,
       customers,
@@ -493,6 +773,29 @@ class MainScene extends Phaser.Scene {
     });
     this.groupBuilder = { customers: [], diveCount: 1 };
     this.diveOpsDirty = true;
+  }
+
+  playReturnAnimation() {
+    if (this.dispatchAnimating || this.activeTab !== 'diveops') return;
+
+    this.carGraphic.setPosition(GAME_WIDTH + 60, CAR_PARK_Y).setAlpha(1).setVisible(true);
+    this.tweens.add({
+      targets: this.carGraphic,
+      x: CAR_PARK_X,
+      duration: RETURN_DRIVE_MS,
+      ease: 'Cubic.easeOut',
+      onComplete: () => {
+        this.tweens.add({
+          targets: this.carGraphic,
+          alpha: 0,
+          delay: 300,
+          duration: 400,
+          onComplete: () => {
+            this.carGraphic.setPosition(CAR_PARK_X, CAR_PARK_Y).setAlpha(1);
+          },
+        });
+      },
+    });
   }
 
   updateDiveReturns() {
@@ -504,6 +807,7 @@ class MainScene extends Phaser.Scene {
       this.money += group.diveCount * group.customers.length * DIVE_PRICE_PER_DIVE;
     }
     this.diveOpsDirty = true;
+    this.playReturnAnimation();
   }
 
   makePoolCard(customer, x, y) {
@@ -514,7 +818,7 @@ class MainScene extends Phaser.Scene {
     this.input.setDraggable(container);
 
     const avatarColor = customer.source === 'booking' ? COLOR_TEAL : COLOR_CORAL;
-    this.addAvatar(container, -(w / 2) + 26, customer.name[0], avatarColor);
+    this.addPersonAvatar(container, -(w / 2) + 26, avatarColor);
 
     const nameText = this.add.text(-(w / 2) + 50, 0, customer.name, {
       fontFamily: 'sans-serif',
@@ -545,7 +849,7 @@ class MainScene extends Phaser.Scene {
     container.on('pointerdown', () => this.removeFromGroupBuilder(customer.id));
 
     const avatarColor = customer.source === 'booking' ? COLOR_TEAL : COLOR_CORAL;
-    this.addAvatar(container, -(w / 2) + 22, customer.name[0], avatarColor);
+    this.addPersonAvatar(container, -(w / 2) + 22, avatarColor);
 
     const nameText = this.add.text(-(w / 2) + 44, 0, `${customer.name} (wants ${customer.diveCount})`, {
       fontFamily: 'sans-serif',
@@ -639,7 +943,10 @@ class MainScene extends Phaser.Scene {
     } else {
       const chipHeight = 36;
       for (const customer of this.groupBuilder.customers) {
-        this.diveOpsListObjects.push(this.makeStagingChip(customer, y));
+        const chip = this.makeStagingChip(customer, y);
+        this.diveOpsListObjects.push(chip);
+        this.stagingChipObjects.push(chip);
+        this.stagingChipPositions.push({ x: chip.x, y: chip.y, source: customer.source });
         y += chipHeight + 6;
       }
     }
@@ -685,6 +992,7 @@ class MainScene extends Phaser.Scene {
     }).setOrigin(0.5);
     dispatchBtn.add(dispatchLabel);
     this.diveOpsListObjects.push(dispatchBtn);
+    this.dispatchBtnRef = dispatchBtn;
     y = dispatchY + 40;
 
     // The staging drop zone covers everything from the label down to the dispatch button.
@@ -748,6 +1056,7 @@ class MainScene extends Phaser.Scene {
       this.updateWalkInSpawner(deltaGameMinutes);
     }
     this.updateBookingArrivals();
+    this.updateQueuePatience(deltaGameMinutes);
     this.updateDiveReturns();
 
     if (this.activeTab === 'diveops' && this.dispatchedGroups.length > 0) {
@@ -759,11 +1068,11 @@ class MainScene extends Phaser.Scene {
     }
 
     this.refreshHeader();
-    if (this.activeTab === 'frontdesk' && this.frontDeskDirty) {
+    if (this.activeTab === 'frontdesk' && this.frontDeskDirty && !this.checkInDialogState) {
       this.renderFrontDesk();
       this.frontDeskDirty = false;
     }
-    if (this.activeTab === 'diveops' && this.diveOpsDirty) {
+    if (this.activeTab === 'diveops' && this.diveOpsDirty && !this.dispatchAnimating) {
       this.renderDiveOps();
       this.diveOpsDirty = false;
     }

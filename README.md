@@ -67,9 +67,16 @@ mobile, and claude.ai — so GitHub (`75Doc/game1`) is the source of truth:
 
 ## Status
 
-- **Front Desk**: walk-in and pre-booking queue, tap to check a customer in.
+- **Front Desk**: a mix of pre-bookings (~85%) and walk-ins (~15%) arrive over
+  the day. Tapping a queue entry opens a check-in dialog — mark which gear
+  they own vs. need to rent (prices are rough real-world dive-shop rates);
+  rentals are charged immediately. Queued customers who wait too long
+  (a hidden per-customer patience timer) leave without checking in.
 - **Dive Ops**: drag checked-in customers into a new group (1-6, guide is
-  automatic/unlimited for now), pick a dive count (1-3), dispatch, and it pays
-  out automatically on return.
+  automatic/unlimited for now), pick a dive count (1-3), dispatch. Dispatching
+  plays a little walk-to-car-and-drive-off animation; the group pays out
+  ($55/customer/dive — tanks/guide/boat, gear is billed separately at
+  check-in) automatically when the car drives back on return.
 - **Equipment**: not implemented yet — placeholder tab. Per-customer gear
-  wear, rinse bonus, maintenance, and upgrades are the next feature.
+  wear, rinse bonus, maintenance, and upgrades (building on the rentals
+  already recorded at check-in) are the next feature.
