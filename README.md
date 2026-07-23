@@ -78,8 +78,11 @@ mobile, and claude.ai — so GitHub (`75Doc/game1`) is the source of truth:
   rented until it's rinsed. Queued customers who wait too long (a hidden
   per-customer patience timer) leave without checking in — their card
   flashes coral with a "Leaving soon!" warning once their patience is
-  running low. A **marketing campaign** ($100) can be run from here for an
-  immediate burst of walk-ins plus a 4-hour boosted walk-in rate.
+  running low. A **marketing campaign** (always $100 to run) can be launched
+  from here for an immediate burst of walk-ins plus a temporary boosted
+  walk-in rate; a one-time **campaign upgrade** ($300) permanently bumps it
+  to Level 2 — a bigger burst and a longer, stronger boost — for the same
+  $100 run cost.
 - **Dive Ops**: drag checked-in customers into a new group (1-6), pick a
   dive count (1-3), dispatch. The shop starts with **one guide**, so only
   one group can be out diving at a time; **hire more guides** ($120 each)
