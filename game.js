@@ -59,6 +59,15 @@ const RENTAL_ITEMS = [
   { key: 'weights', label: 'Weights', price: 5 },
 ];
 
+// --- Equipment: shop-owned rental gear condition, rinsing, maintenance, upgrades ----
+const GEAR_MAX_CONDITION = 100;
+const GEAR_WEAR_PER_USE = 6;            // condition lost per dispatch that uses a gear type
+const GEAR_DIRTY_WEAR_MULTIPLIER = 2;   // extra wear if the gear wasn't rinsed since its last use
+const GEAR_RINSE_RESTORE = 4;           // condition regained by rinsing
+const GEAR_MAINTENANCE_COST = 30;       // fully restores condition
+const GEAR_UPGRADE_COST = 150;          // one-time per gear type, halves future wear
+const GEAR_MIN_PAYOUT_FACTOR = 0.6;     // revenue multiplier for a dive on fully-worn rented gear
+
 // --- Dive ops: group assembly & dispatch ---------------------------------------
 const MIN_GROUP_SIZE = 1;
 const MAX_GROUP_SIZE = 6;
@@ -147,6 +156,13 @@ class MainScene extends Phaser.Scene {
 
     this.dialogObjects = [];
     this.checkInDialogState = null; // { customer, rentals: Set<string> }
+
+    this.gear = {};
+    for (const item of RENTAL_ITEMS) {
+      this.gear[item.key] = { condition: GEAR_MAX_CONDITION, dirty: false, upgraded: false };
+    }
+    this.equipmentDirty = true;
+    this.equipmentListObjects = [];
   }
 
   create() {
@@ -343,6 +359,7 @@ class MainScene extends Phaser.Scene {
     // Tear down whichever tab's dynamic content was showing, then build the new one.
     this.clearFrontDeskList();
     this.clearDiveOpsList();
+    this.clearEquipmentList();
     this.panelContent.setText('');
     this.diveOpsDecor.setVisible(key === 'diveops');
     this.carGraphic.setVisible(key === 'diveops');
@@ -358,7 +375,7 @@ class MainScene extends Phaser.Scene {
     } else if (key === 'diveops') {
       this.diveOpsDirty = true;
     } else {
-      this.panelContent.setText('Per-customer gear sets: rinse after a dive for a bonus, maintain, replace, or upgrade for higher-value dives.');
+      this.equipmentDirty = true;
     }
   }
 
@@ -470,6 +487,7 @@ class MainScene extends Phaser.Scene {
       .reduce((sum, item) => sum + item.price, 0);
     customer.rentals = Array.from(rentals);
     this.money += total;
+    this.equipmentDirty = true;
     this.closeCheckInDialog();
     this.checkInCustomer(customer.id);
   }
@@ -676,6 +694,185 @@ class MainScene extends Phaser.Scene {
     this.frontDeskListObjects.push(checkedInText);
   }
 
+  // --- Equipment: shop-owned rental gear condition -----------------------------
+
+  /** Revenue multiplier a single gear type currently commands, based on wear. */
+  gearConditionFactor(key) {
+    const ratio = this.gear[key].condition / GEAR_MAX_CONDITION;
+    return GEAR_MIN_PAYOUT_FACTOR + (1 - GEAR_MIN_PAYOUT_FACTOR) * ratio;
+  }
+
+  /** A customer's dive pays full price unless gear they rented (not owned) is worn down. */
+  customerPayoutFactor(customer) {
+    const keys = customer.rentals || [];
+    if (keys.length === 0) return 1;
+    const total = keys.reduce((sum, key) => sum + this.gearConditionFactor(key), 0);
+    return total / keys.length;
+  }
+
+  /** Wears every gear type rented by anyone in a dispatched group, once per type. */
+  applyGearWear(customers) {
+    const usedKeys = new Set();
+    for (const c of customers) {
+      for (const key of (c.rentals || [])) usedKeys.add(key);
+    }
+    for (const key of usedKeys) {
+      const gear = this.gear[key];
+      const wear = GEAR_WEAR_PER_USE * (gear.dirty ? GEAR_DIRTY_WEAR_MULTIPLIER : 1) * (gear.upgraded ? 0.5 : 1);
+      gear.condition = Math.max(0, gear.condition - wear);
+      gear.dirty = true;
+    }
+    this.equipmentDirty = true;
+  }
+
+  rinseGear(key) {
+    const gear = this.gear[key];
+    if (!gear.dirty) return;
+    gear.dirty = false;
+    gear.condition = Math.min(GEAR_MAX_CONDITION, gear.condition + GEAR_RINSE_RESTORE);
+    this.equipmentDirty = true;
+  }
+
+  maintainGear(key) {
+    const gear = this.gear[key];
+    if (gear.condition >= GEAR_MAX_CONDITION || this.money < GEAR_MAINTENANCE_COST) return;
+    this.money -= GEAR_MAINTENANCE_COST;
+    gear.condition = GEAR_MAX_CONDITION;
+    this.equipmentDirty = true;
+  }
+
+  upgradeGear(key) {
+    const gear = this.gear[key];
+    if (gear.upgraded || this.money < GEAR_UPGRADE_COST) return;
+    this.money -= GEAR_UPGRADE_COST;
+    gear.upgraded = true;
+    this.equipmentDirty = true;
+  }
+
+  conditionColor(condition) {
+    if (condition >= 70) return COLOR_TEAL;
+    if (condition >= 40) return COLOR_CORAL;
+    return 0xb0402c;
+  }
+
+  clearEquipmentList() {
+    for (const obj of this.equipmentListObjects) obj.destroy();
+    this.equipmentListObjects = [];
+  }
+
+  /** Returns the row's display objects (a background card plus flat, absolutely-positioned
+   *  interactive buttons — matching the sibling-list pattern the check-in dialog and Dive Ops
+   *  stepper use, rather than nesting interactive cards inside another container). */
+  buildGearRow(item, topY) {
+    const w = GAME_WIDTH - 32;
+    const h = 112;
+    const gear = this.gear[item.key];
+    const cx = GAME_WIDTH / 2;
+    const cy = topY + h / 2;
+    const objects = [];
+
+    const container = this.createCard(cx, cy, w, h, COLOR_CARD, COLOR_TEAL, 14);
+    objects.push(container);
+
+    const label = this.add.text(-(w / 2) + 16, -h / 2 + 16, item.label, {
+      fontFamily: 'sans-serif',
+      fontSize: '14px',
+      fontStyle: 'bold',
+      color: COLOR_TEXT,
+    }).setOrigin(0, 0.5);
+
+    const statusBits = [];
+    if (gear.upgraded) statusBits.push('Upgraded');
+    statusBits.push(gear.dirty ? 'Needs rinse' : 'Clean');
+    const status = this.add.text(w / 2 - 16, -h / 2 + 16, statusBits.join('  •  '), {
+      fontFamily: 'sans-serif',
+      fontSize: '11px',
+      color: gear.dirty ? COLOR_CORAL : COLOR_TEXT_DIM,
+    }).setOrigin(1, 0.5);
+
+    const barY = -h / 2 + 44;
+    const barW = w - 32;
+    const barBg = this.add.rectangle(0, barY, barW, 10, 0xe7ddc4).setOrigin(0.5);
+    const fillW = Math.max(2, barW * (gear.condition / GEAR_MAX_CONDITION));
+    const barFill = this.add.rectangle(-barW / 2, barY, fillW, 10, this.conditionColor(gear.condition)).setOrigin(0, 0.5);
+    const conditionText = this.add.text(0, barY + 18, `${Math.round(gear.condition)}% condition`, {
+      fontFamily: 'sans-serif',
+      fontSize: '11px',
+      color: COLOR_TEXT_DIM,
+    }).setOrigin(0.5);
+
+    container.add([label, status, barBg, barFill, conditionText]);
+
+    const btnY = cy + (h / 2 - 24);
+    const btnW = (w - 32 - 16) / 3;
+    const btnX = (i) => cx - w / 2 + 16 + btnW / 2 + i * (btnW + 8);
+
+    const rinseBtn = this.createCard(btnX(0), btnY, btnW, 32,
+      gear.dirty ? COLOR_TEAL : COLOR_CARD_ALT, COLOR_TEAL, 8);
+    if (gear.dirty) {
+      rinseBtn.setInteractive({ useHandCursor: true });
+      rinseBtn.on('pointerdown', () => this.rinseGear(item.key));
+    }
+    const rinseLabel = this.add.text(0, 0, 'Rinse', {
+      fontFamily: 'sans-serif', fontSize: '11px', color: gear.dirty ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
+    }).setOrigin(0.5);
+    rinseBtn.add(rinseLabel);
+    objects.push(rinseBtn);
+
+    const canMaintain = gear.condition < GEAR_MAX_CONDITION && this.money >= GEAR_MAINTENANCE_COST;
+    const maintainBtn = this.createCard(btnX(1), btnY, btnW, 32,
+      canMaintain ? COLOR_TEAL : COLOR_CARD_ALT, COLOR_TEAL, 8);
+    if (canMaintain) {
+      maintainBtn.setInteractive({ useHandCursor: true });
+      maintainBtn.on('pointerdown', () => this.maintainGear(item.key));
+    }
+    const maintainLabel = this.add.text(0, 0, `Fix $${GEAR_MAINTENANCE_COST}`, {
+      fontFamily: 'sans-serif', fontSize: '11px', color: canMaintain ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
+    }).setOrigin(0.5);
+    maintainBtn.add(maintainLabel);
+    objects.push(maintainBtn);
+
+    const canUpgrade = !gear.upgraded && this.money >= GEAR_UPGRADE_COST;
+    const upgradeBtn = this.createCard(btnX(2), btnY, btnW, 32,
+      canUpgrade ? COLOR_CORAL : COLOR_CARD_ALT, COLOR_TEAL, 8);
+    if (canUpgrade) {
+      upgradeBtn.setInteractive({ useHandCursor: true });
+      upgradeBtn.on('pointerdown', () => this.upgradeGear(item.key));
+    }
+    const upgradeLabel = this.add.text(0, 0, gear.upgraded ? 'Upgraded' : `Upgrade $${GEAR_UPGRADE_COST}`, {
+      fontFamily: 'sans-serif',
+      fontSize: '11px',
+      color: gear.upgraded ? COLOR_TEXT_DIM : (canUpgrade ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM),
+    }).setOrigin(0.5);
+    upgradeBtn.add(upgradeLabel);
+    objects.push(upgradeBtn);
+
+    return objects;
+  }
+
+  renderEquipment() {
+    this.clearEquipmentList();
+    let y = SAFE_TOP + 40;
+
+    const intro = this.add.text(GAME_WIDTH / 2, y,
+      'Rented gear wears with use. Rinse it after a dive, pay to fix it up, or upgrade it to wear slower.', {
+        fontFamily: 'sans-serif',
+        fontSize: '12px',
+        color: COLOR_TEXT_DIM,
+        align: 'center',
+        wordWrap: { width: GAME_WIDTH - 64 },
+      }).setOrigin(0.5, 0);
+    this.equipmentListObjects.push(intro);
+    y += 40;
+
+    const rowHeight = 112;
+    const rowGap = 8;
+    for (const item of RENTAL_ITEMS) {
+      this.equipmentListObjects.push(...this.buildGearRow(item, y));
+      y += rowHeight + rowGap;
+    }
+  }
+
   // --- Dive ops: group assembly & dispatch ------------------------------------
 
   clearDiveOpsList() {
@@ -765,10 +962,18 @@ class MainScene extends Phaser.Scene {
   }
 
   finalizeDispatch(customers, diveCount) {
+    // Snapshot the payout factor before this trip's wear is applied, so the price reflects
+    // the gear condition the customers actually dove with.
+    const payoutFactor = customers.length > 0
+      ? customers.reduce((sum, c) => sum + this.customerPayoutFactor(c), 0) / customers.length
+      : 1;
+    this.applyGearWear(customers);
+
     this.dispatchedGroups.push({
       id: this.nextGroupId++,
       customers,
       diveCount,
+      payoutFactor,
       returnAtMinute: this.totalMinutes + diveCount * DIVE_DURATION_MINUTES_PER_DIVE,
     });
     this.groupBuilder = { customers: [], diveCount: 1 };
@@ -804,9 +1009,11 @@ class MainScene extends Phaser.Scene {
 
     this.dispatchedGroups = this.dispatchedGroups.filter((g) => g.returnAtMinute > this.totalMinutes);
     for (const group of returned) {
-      this.money += group.diveCount * group.customers.length * DIVE_PRICE_PER_DIVE;
+      const factor = group.payoutFactor ?? 1;
+      this.money += Math.round(group.diveCount * group.customers.length * DIVE_PRICE_PER_DIVE * factor);
     }
     this.diveOpsDirty = true;
+    this.equipmentDirty = true;
     this.playReturnAnimation();
   }
 
@@ -1075,6 +1282,10 @@ class MainScene extends Phaser.Scene {
     if (this.activeTab === 'diveops' && this.diveOpsDirty && !this.dispatchAnimating) {
       this.renderDiveOps();
       this.diveOpsDirty = false;
+    }
+    if (this.activeTab === 'equipment' && this.equipmentDirty) {
+      this.renderEquipment();
+      this.equipmentDirty = false;
     }
   }
 }
