@@ -56,17 +56,26 @@ const RENTAL_ITEMS = [
   { key: 'bcd', label: 'BCD', price: 20 },
   { key: 'regulator', label: 'Regulator', price: 20 },
   { key: 'computer', label: 'Dive Computer', price: 12 },
-  { key: 'weights', label: 'Weights', price: 5 },
+  { key: 'torch', label: 'Torch', price: 8 },
 ];
 
-// --- Equipment: shop-owned rental gear condition, rinsing, maintenance, upgrades ----
+// --- Equipment: shop-owned rental gear inventory, condition, and upgrades ----
+const GEAR_UNITS_PER_TYPE = 10;         // starting physical units owned per rental type
 const GEAR_MAX_CONDITION = 100;
-const GEAR_WEAR_PER_USE = 6;            // condition lost per dispatch that uses a gear type
-const GEAR_DIRTY_WEAR_MULTIPLIER = 2;   // extra wear if the gear wasn't rinsed since its last use
-const GEAR_RINSE_RESTORE = 4;           // condition regained by rinsing
-const GEAR_MAINTENANCE_COST = 30;       // fully restores condition
-const GEAR_UPGRADE_COST = 150;          // one-time per gear type, halves future wear
+const GEAR_WEAR_PER_USE = 6;            // condition a unit loses each time it's rented out and returned
+const GEAR_RINSE_RESTORE = 4;           // condition regained by rinsing (also required before re-renting)
+const GEAR_MAINTENANCE_COST = 30;       // fully restores the single worst unit of a type
+const GEAR_UPGRADE_COST = 150;          // one-time per gear type: halves future wear, raises rental price
+const GEAR_UPGRADE_PRICE_MULTIPLIER = 1.5;
+const GEAR_BUY_UNIT_COST = 80;          // buy one more physical unit of a gear type
 const GEAR_MIN_PAYOUT_FACTOR = 0.6;     // revenue multiplier for a dive on fully-worn rented gear
+
+// --- Marketing: a paid campaign that temporarily boosts walk-in traffic ----
+const MARKETING_COST = 100;
+const MARKETING_BOOST_MINUTES = 240;          // how long the boosted walk-in rate lasts
+const MARKETING_WALKIN_GAP_MULTIPLIER = 0.4;  // walk-ins arrive ~2.5x more often while boosted
+const MARKETING_INSTANT_WALKINS_MIN = 2;      // immediate walk-in burst when the campaign launches
+const MARKETING_INSTANT_WALKINS_MAX = 4;
 
 // --- Dive ops: group assembly & dispatch ---------------------------------------
 const MIN_GROUP_SIZE = 1;
@@ -78,6 +87,10 @@ const DIVE_PRICE_PER_DIVE = 55;            // revenue per customer per dive (tan
 const MAX_POOL_CARDS_SHOWN = 5;
 const MAX_OUT_GROUPS_SHOWN = 4;
 const DIVE_OPS_REFRESH_MS = 1000; // how often the "back in Xm" timers repaint
+
+// Guide: a fixed cost per dispatched group, plus a cost per dive in the trip — each half a dive's price.
+const GUIDE_COST_PER_GROUP = DIVE_PRICE_PER_DIVE * 0.5;
+const GUIDE_COST_PER_DIVE = DIVE_PRICE_PER_DIVE * 0.5;
 
 // --- Dispatch animation: little people walking to the car, car driving to the dock ---
 const PERSON_HEAD_COLOR = 0xf0c9a0;
@@ -139,6 +152,7 @@ class MainScene extends Phaser.Scene {
     this.walkInTimer = randomBetween(WALKIN_MIN_GAP, WALKIN_MAX_GAP);
     this.frontDeskDirty = true;
     this.frontDeskListObjects = [];
+    this.frontDeskRefreshAccumMs = 0;
     this.lastDayIndex = dayIndex(this.totalMinutes);
 
     this.nextGroupId = 1;
@@ -158,11 +172,21 @@ class MainScene extends Phaser.Scene {
     this.checkInDialogState = null; // { customer, rentals: Set<string> }
 
     this.gear = {};
+    this.nextGearUnitId = 1;
     for (const item of RENTAL_ITEMS) {
-      this.gear[item.key] = { condition: GEAR_MAX_CONDITION, dirty: false, upgraded: false };
+      this.gear[item.key] = {
+        upgraded: false,
+        units: Array.from({ length: GEAR_UNITS_PER_TYPE }, () => ({
+          id: this.nextGearUnitId++,
+          condition: GEAR_MAX_CONDITION,
+          status: 'available', // 'available' | 'checked_out' | 'dirty' (needs rinsing before it can be rented again)
+        })),
+      };
     }
     this.equipmentDirty = true;
     this.equipmentListObjects = [];
+
+    this.marketingBoostUntil = 0; // totalMinutes until which walk-ins arrive more often
   }
 
   create() {
@@ -318,6 +342,14 @@ class MainScene extends Phaser.Scene {
       color: '#ffffff',
     }).setOrigin(0.5);
 
+    // Laptop sitting on the counter, used to look up/check in arrivals.
+    const laptopX = 330;
+    g.fillStyle(0x3a3a3a, 1);
+    g.fillRoundedRect(laptopX - 22, baseY - 14, 44, 6, 2);
+    g.fillRoundedRect(laptopX - 16, baseY - 40, 32, 26, 3);
+    g.fillStyle(0x8fd9d0, 1);
+    g.fillRect(laptopX - 12, baseY - 36, 24, 18);
+
     const container = this.add.container(0, 0, [g, label]);
     container.setVisible(false);
     return container;
@@ -424,8 +456,22 @@ class MainScene extends Phaser.Scene {
     this.walkInTimer -= deltaGameMinutes;
     if (this.walkInTimer <= 0) {
       this.spawnWalkIn();
-      this.walkInTimer = randomBetween(WALKIN_MIN_GAP, WALKIN_MAX_GAP);
+      const boosted = this.totalMinutes < this.marketingBoostUntil;
+      const gapMultiplier = boosted ? MARKETING_WALKIN_GAP_MULTIPLIER : 1;
+      this.walkInTimer = randomBetween(WALKIN_MIN_GAP, WALKIN_MAX_GAP) * gapMultiplier;
     }
+  }
+
+  /** Launches a paid marketing campaign: an immediate burst of walk-ins, then a boosted
+   *  walk-in rate for a while. */
+  runMarketingCampaign() {
+    if (this.totalMinutes < this.marketingBoostUntil) return; // already running
+    if (this.money < MARKETING_COST) return;
+    this.money -= MARKETING_COST;
+    this.marketingBoostUntil = this.totalMinutes + MARKETING_BOOST_MINUTES;
+    const burst = Math.floor(randomBetween(MARKETING_INSTANT_WALKINS_MIN, MARKETING_INSTANT_WALKINS_MAX + 1));
+    for (let i = 0; i < burst; i++) this.spawnWalkIn();
+    this.frontDeskDirty = true;
   }
 
   updateBookingArrivals() {
@@ -475,17 +521,28 @@ class MainScene extends Phaser.Scene {
 
   toggleRentalItem(key) {
     const { rentals } = this.checkInDialogState;
-    if (rentals.has(key)) rentals.delete(key);
-    else rentals.add(key);
+    if (rentals.has(key)) {
+      rentals.delete(key);
+    } else {
+      if (this.availableUnits(key).length === 0) return; // none clean and ready — needs rinsing first
+      rentals.add(key);
+    }
     this.renderCheckInDialog();
   }
 
   confirmCheckIn() {
     const { customer, rentals } = this.checkInDialogState;
-    const total = RENTAL_ITEMS
-      .filter((item) => rentals.has(item.key))
-      .reduce((sum, item) => sum + item.price, 0);
-    customer.rentals = Array.from(rentals);
+    const rentalUnits = {};
+    let total = 0;
+    for (const item of RENTAL_ITEMS) {
+      if (!rentals.has(item.key)) continue;
+      const unit = this.pickAvailableUnit(item.key);
+      if (!unit) continue; // defensive: shouldn't happen, the toggle already gates on availability
+      unit.status = 'checked_out';
+      rentalUnits[item.key] = unit.id;
+      total += this.gearRentalPrice(item);
+    }
+    customer.rentalUnits = rentalUnits;
     this.money += total;
     this.equipmentDirty = true;
     this.closeCheckInDialog();
@@ -533,21 +590,27 @@ class MainScene extends Phaser.Scene {
 
     for (const item of RENTAL_ITEMS) {
       const renting = rentals.has(item.key);
+      const availableCount = this.availableUnits(item.key).length;
+      const canRent = renting || availableCount > 0;
       const rowY = y + rowHeight / 2;
 
-      const label = this.add.text(panelX - panelWidth / 2 + 20, rowY, item.label, {
+      const label = this.add.text(panelX - panelWidth / 2 + 20, rowY, `${item.label} (${availableCount} clean)`, {
         fontFamily: 'sans-serif',
-        fontSize: '13px',
+        fontSize: '12px',
         color: COLOR_TEXT,
       }).setOrigin(0, 0.5);
       this.dialogObjects.push(label);
 
       const toggleW = 96;
+      const toggleColor = renting ? COLOR_CORAL : (canRent ? COLOR_CARD_ALT : 0xe4ddd0);
       const toggle = this.createCard(panelX + panelWidth / 2 - 20 - toggleW / 2, rowY, toggleW, 28,
-        renting ? COLOR_CORAL : COLOR_CARD_ALT, COLOR_TEAL, 14);
-      toggle.setInteractive({ useHandCursor: true });
-      toggle.on('pointerdown', () => this.toggleRentalItem(item.key));
-      const toggleLabel = this.add.text(0, 0, renting ? `Rent $${item.price}` : 'Own', {
+        toggleColor, COLOR_TEAL, 14);
+      if (canRent) {
+        toggle.setInteractive({ useHandCursor: true });
+        toggle.on('pointerdown', () => this.toggleRentalItem(item.key));
+      }
+      const toggleText = renting ? `Rent $${this.gearRentalPrice(item)}` : (canRent ? 'Own' : 'None clean');
+      const toggleLabel = this.add.text(0, 0, toggleText, {
         fontFamily: 'sans-serif',
         fontSize: '11px',
         color: renting ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
@@ -560,7 +623,7 @@ class MainScene extends Phaser.Scene {
 
     const total = RENTAL_ITEMS
       .filter((item) => rentals.has(item.key))
-      .reduce((sum, item) => sum + item.price, 0);
+      .reduce((sum, item) => sum + this.gearRentalPrice(item), 0);
     y += 6;
     const totalText = this.add.text(panelX, y, `Rental total: $${total}`, {
       fontFamily: 'sans-serif',
@@ -634,7 +697,26 @@ class MainScene extends Phaser.Scene {
       color: COLOR_TEXT_DIM,
     }).setOrigin(0.5);
     this.frontDeskListObjects.push(bookingsText);
-    y += 30;
+    y += 26;
+
+    const boosted = this.totalMinutes < this.marketingBoostUntil;
+    const canRunCampaign = !boosted && this.money >= MARKETING_COST;
+    const campaignBtn = this.createCard(GAME_WIDTH / 2, y + 18, GAME_WIDTH - 32, 36,
+      boosted ? COLOR_CARD_ALT : (canRunCampaign ? COLOR_TEAL : COLOR_CARD_ALT), COLOR_TEAL, 10);
+    if (canRunCampaign) {
+      campaignBtn.setInteractive({ useHandCursor: true });
+      campaignBtn.on('pointerdown', () => this.runMarketingCampaign());
+    }
+    const campaignLabel = boosted
+      ? `📣 Campaign running — ${Math.ceil(this.marketingBoostUntil - this.totalMinutes)}m left`
+      : `📣 Run marketing campaign ($${MARKETING_COST})`;
+    campaignBtn.add(this.add.text(0, 0, campaignLabel, {
+      fontFamily: 'sans-serif',
+      fontSize: '12px',
+      color: boosted ? COLOR_TEXT_DIM : (canRunCampaign ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM),
+    }).setOrigin(0.5));
+    this.frontDeskListObjects.push(campaignBtn);
+    y += 46;
 
     const queueLabel = this.add.text(24, y, `Queue (${this.queue.length})`, {
       fontFamily: 'sans-serif',
@@ -694,58 +776,97 @@ class MainScene extends Phaser.Scene {
     this.frontDeskListObjects.push(checkedInText);
   }
 
-  // --- Equipment: shop-owned rental gear condition -----------------------------
+  // --- Equipment: shop-owned rental gear inventory, condition, and upgrades ----
 
-  /** Revenue multiplier a single gear type currently commands, based on wear. */
-  gearConditionFactor(key) {
-    const ratio = this.gear[key].condition / GEAR_MAX_CONDITION;
+  /** What this gear type currently rents for — upgraded gear commands a higher price. */
+  gearRentalPrice(item) {
+    const gear = this.gear[item.key];
+    return gear.upgraded ? Math.round(item.price * GEAR_UPGRADE_PRICE_MULTIPLIER) : item.price;
+  }
+
+  availableUnits(key) {
+    return this.gear[key].units.filter((u) => u.status === 'available');
+  }
+
+  /** Hands out the best-condition available unit — the fresher units get used first. */
+  pickAvailableUnit(key) {
+    const units = this.availableUnits(key);
+    if (units.length === 0) return null;
+    return units.reduce((best, u) => (u.condition > best.condition ? u : best), units[0]);
+  }
+
+  /** Revenue multiplier for the specific unit a customer rented, based on its condition. */
+  unitConditionFactor(key, unitId) {
+    const unit = this.gear[key].units.find((u) => u.id === unitId);
+    if (!unit) return 1;
+    const ratio = unit.condition / GEAR_MAX_CONDITION;
     return GEAR_MIN_PAYOUT_FACTOR + (1 - GEAR_MIN_PAYOUT_FACTOR) * ratio;
   }
 
   /** A customer's dive pays full price unless gear they rented (not owned) is worn down. */
   customerPayoutFactor(customer) {
-    const keys = customer.rentals || [];
-    if (keys.length === 0) return 1;
-    const total = keys.reduce((sum, key) => sum + this.gearConditionFactor(key), 0);
-    return total / keys.length;
+    const entries = Object.entries(customer.rentalUnits || {});
+    if (entries.length === 0) return 1;
+    const total = entries.reduce((sum, [key, unitId]) => sum + this.unitConditionFactor(key, unitId), 0);
+    return total / entries.length;
   }
 
-  /** Wears every gear type rented by anyone in a dispatched group, once per type. */
-  applyGearWear(customers) {
-    const usedKeys = new Set();
+  /** Called when a dispatched group returns: every rented unit comes back worn and dirty —
+   *  it must be rinsed before the shop can rent it out again. */
+  returnRentedGear(customers) {
     for (const c of customers) {
-      for (const key of (c.rentals || [])) usedKeys.add(key);
-    }
-    for (const key of usedKeys) {
-      const gear = this.gear[key];
-      const wear = GEAR_WEAR_PER_USE * (gear.dirty ? GEAR_DIRTY_WEAR_MULTIPLIER : 1) * (gear.upgraded ? 0.5 : 1);
-      gear.condition = Math.max(0, gear.condition - wear);
-      gear.dirty = true;
+      for (const [key, unitId] of Object.entries(c.rentalUnits || {})) {
+        const gear = this.gear[key];
+        const unit = gear.units.find((u) => u.id === unitId);
+        if (!unit) continue;
+        const wear = GEAR_WEAR_PER_USE * (gear.upgraded ? 0.5 : 1);
+        unit.condition = Math.max(0, unit.condition - wear);
+        unit.status = 'dirty';
+      }
     }
     this.equipmentDirty = true;
   }
 
-  rinseGear(key) {
+  /** Rinses every dirty unit of a type at once, making them available to rent again. */
+  rinseGearType(key) {
     const gear = this.gear[key];
-    if (!gear.dirty) return;
-    gear.dirty = false;
-    gear.condition = Math.min(GEAR_MAX_CONDITION, gear.condition + GEAR_RINSE_RESTORE);
-    this.equipmentDirty = true;
+    let changed = false;
+    for (const unit of gear.units) {
+      if (unit.status !== 'dirty') continue;
+      unit.status = 'available';
+      unit.condition = Math.min(GEAR_MAX_CONDITION, unit.condition + GEAR_RINSE_RESTORE);
+      changed = true;
+    }
+    if (changed) this.equipmentDirty = true;
   }
 
-  maintainGear(key) {
+  /** Fully restores the single worst (non checked-out) unit of a type. */
+  maintainGearType(key) {
     const gear = this.gear[key];
-    if (gear.condition >= GEAR_MAX_CONDITION || this.money < GEAR_MAINTENANCE_COST) return;
+    if (this.money < GEAR_MAINTENANCE_COST) return;
+    const candidates = gear.units.filter((u) => u.status !== 'checked_out' && u.condition < GEAR_MAX_CONDITION);
+    if (candidates.length === 0) return;
+    const worst = candidates.reduce((w, u) => (u.condition < w.condition ? u : w), candidates[0]);
     this.money -= GEAR_MAINTENANCE_COST;
-    gear.condition = GEAR_MAX_CONDITION;
+    worst.condition = GEAR_MAX_CONDITION;
     this.equipmentDirty = true;
   }
 
-  upgradeGear(key) {
+  /** One-time per type: halves future wear for all its units, but raises its rental price. */
+  upgradeGearType(key) {
     const gear = this.gear[key];
     if (gear.upgraded || this.money < GEAR_UPGRADE_COST) return;
     this.money -= GEAR_UPGRADE_COST;
     gear.upgraded = true;
+    this.equipmentDirty = true;
+  }
+
+  /** Buys one more physical unit of a gear type, growing the rental pool. */
+  buyGearUnit(key) {
+    const gear = this.gear[key];
+    if (this.money < GEAR_BUY_UNIT_COST) return;
+    this.money -= GEAR_BUY_UNIT_COST;
+    gear.units.push({ id: this.nextGearUnitId++, condition: GEAR_MAX_CONDITION, status: 'available' });
     this.equipmentDirty = true;
   }
 
@@ -765,8 +886,13 @@ class MainScene extends Phaser.Scene {
    *  stepper use, rather than nesting interactive cards inside another container). */
   buildGearRow(item, topY) {
     const w = GAME_WIDTH - 32;
-    const h = 112;
+    const h = 106;
     const gear = this.gear[item.key];
+    const units = gear.units;
+    const available = units.filter((u) => u.status === 'available').length;
+    const dirty = units.filter((u) => u.status === 'dirty').length;
+    const checkedOut = units.filter((u) => u.status === 'checked_out').length;
+    const avgCondition = units.reduce((sum, u) => sum + u.condition, 0) / units.length;
     const cx = GAME_WIDTH / 2;
     const cy = topY + h / 2;
     const objects = [];
@@ -774,99 +900,83 @@ class MainScene extends Phaser.Scene {
     const container = this.createCard(cx, cy, w, h, COLOR_CARD, COLOR_TEAL, 14);
     objects.push(container);
 
-    const label = this.add.text(-(w / 2) + 16, -h / 2 + 16, item.label, {
+    const label = this.add.text(-(w / 2) + 16, -h / 2 + 14, `${item.label}${gear.upgraded ? ' ⭐' : ''}`, {
       fontFamily: 'sans-serif',
-      fontSize: '14px',
+      fontSize: '13px',
       fontStyle: 'bold',
       color: COLOR_TEXT,
     }).setOrigin(0, 0.5);
 
-    const statusBits = [];
-    if (gear.upgraded) statusBits.push('Upgraded');
-    statusBits.push(gear.dirty ? 'Needs rinse' : 'Clean');
-    const status = this.add.text(w / 2 - 16, -h / 2 + 16, statusBits.join('  •  '), {
-      fontFamily: 'sans-serif',
-      fontSize: '11px',
-      color: gear.dirty ? COLOR_CORAL : COLOR_TEXT_DIM,
-    }).setOrigin(1, 0.5);
-
-    const barY = -h / 2 + 44;
-    const barW = w - 32;
-    const barBg = this.add.rectangle(0, barY, barW, 10, 0xe7ddc4).setOrigin(0.5);
-    const fillW = Math.max(2, barW * (gear.condition / GEAR_MAX_CONDITION));
-    const barFill = this.add.rectangle(-barW / 2, barY, fillW, 10, this.conditionColor(gear.condition)).setOrigin(0, 0.5);
-    const conditionText = this.add.text(0, barY + 18, `${Math.round(gear.condition)}% condition`, {
+    const priceText = this.add.text(w / 2 - 16, -h / 2 + 14, `$${this.gearRentalPrice(item)}/rental`, {
       fontFamily: 'sans-serif',
       fontSize: '11px',
       color: COLOR_TEXT_DIM,
-    }).setOrigin(0.5);
+    }).setOrigin(1, 0.5);
 
-    container.add([label, status, barBg, barFill, conditionText]);
+    const countsText = this.add.text(0, -h / 2 + 32,
+      `${available} ready • ${dirty} rinse • ${checkedOut} out • ${Math.round(avgCondition)}% avg`, {
+        fontFamily: 'sans-serif',
+        fontSize: '10px',
+        color: dirty > 0 ? COLOR_CORAL : COLOR_TEXT_DIM,
+      }).setOrigin(0.5);
 
-    const btnY = cy + (h / 2 - 24);
-    const btnW = (w - 32 - 16) / 3;
-    const btnX = (i) => cx - w / 2 + 16 + btnW / 2 + i * (btnW + 8);
+    const barY = -h / 2 + 48;
+    const barW = w - 32;
+    const barBg = this.add.rectangle(0, barY, barW, 8, 0xe7ddc4).setOrigin(0.5);
+    const fillW = Math.max(2, barW * (avgCondition / GEAR_MAX_CONDITION));
+    const barFill = this.add.rectangle(-barW / 2, barY, fillW, 8, this.conditionColor(avgCondition)).setOrigin(0, 0.5);
 
-    const rinseBtn = this.createCard(btnX(0), btnY, btnW, 32,
-      gear.dirty ? COLOR_TEAL : COLOR_CARD_ALT, COLOR_TEAL, 8);
-    if (gear.dirty) {
-      rinseBtn.setInteractive({ useHandCursor: true });
-      rinseBtn.on('pointerdown', () => this.rinseGear(item.key));
-    }
-    const rinseLabel = this.add.text(0, 0, 'Rinse', {
-      fontFamily: 'sans-serif', fontSize: '11px', color: gear.dirty ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
-    }).setOrigin(0.5);
-    rinseBtn.add(rinseLabel);
-    objects.push(rinseBtn);
+    container.add([label, priceText, countsText, barBg, barFill]);
 
-    const canMaintain = gear.condition < GEAR_MAX_CONDITION && this.money >= GEAR_MAINTENANCE_COST;
-    const maintainBtn = this.createCard(btnX(1), btnY, btnW, 32,
-      canMaintain ? COLOR_TEAL : COLOR_CARD_ALT, COLOR_TEAL, 8);
-    if (canMaintain) {
-      maintainBtn.setInteractive({ useHandCursor: true });
-      maintainBtn.on('pointerdown', () => this.maintainGear(item.key));
-    }
-    const maintainLabel = this.add.text(0, 0, `Fix $${GEAR_MAINTENANCE_COST}`, {
-      fontFamily: 'sans-serif', fontSize: '11px', color: canMaintain ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
-    }).setOrigin(0.5);
-    maintainBtn.add(maintainLabel);
-    objects.push(maintainBtn);
+    const btnW = (w - 32 - 18) / 4;
+    const btnX = (i) => cx - w / 2 + 16 + btnW / 2 + i * (btnW + 6);
+    const btnY = cy + (h / 2 - 20);
+
+    /** Builds one action button: a card + centered label, wired up only if `enabled`. */
+    const addButton = (i, enabled, activeColor, label_, onClick) => {
+      const btn = this.createCard(btnX(i), btnY, btnW, 30, enabled ? activeColor : COLOR_CARD_ALT, COLOR_TEAL, 8);
+      if (enabled) {
+        btn.setInteractive({ useHandCursor: true });
+        btn.on('pointerdown', onClick);
+      }
+      btn.add(this.add.text(0, 0, label_, {
+        fontFamily: 'sans-serif', fontSize: '10px', color: enabled ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
+      }).setOrigin(0.5));
+      objects.push(btn);
+    };
+
+    const canRinse = dirty > 0;
+    addButton(0, canRinse, COLOR_TEAL, 'Rinse', () => this.rinseGearType(item.key));
+
+    const canMaintain = this.money >= GEAR_MAINTENANCE_COST
+      && units.some((u) => u.status !== 'checked_out' && u.condition < GEAR_MAX_CONDITION);
+    addButton(1, canMaintain, COLOR_TEAL, `Fix $${GEAR_MAINTENANCE_COST}`, () => this.maintainGearType(item.key));
 
     const canUpgrade = !gear.upgraded && this.money >= GEAR_UPGRADE_COST;
-    const upgradeBtn = this.createCard(btnX(2), btnY, btnW, 32,
-      canUpgrade ? COLOR_CORAL : COLOR_CARD_ALT, COLOR_TEAL, 8);
-    if (canUpgrade) {
-      upgradeBtn.setInteractive({ useHandCursor: true });
-      upgradeBtn.on('pointerdown', () => this.upgradeGear(item.key));
-    }
-    const upgradeLabel = this.add.text(0, 0, gear.upgraded ? 'Upgraded' : `Upgrade $${GEAR_UPGRADE_COST}`, {
-      fontFamily: 'sans-serif',
-      fontSize: '11px',
-      color: gear.upgraded ? COLOR_TEXT_DIM : (canUpgrade ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM),
-    }).setOrigin(0.5);
-    upgradeBtn.add(upgradeLabel);
-    objects.push(upgradeBtn);
+    addButton(2, canUpgrade, COLOR_CORAL, gear.upgraded ? 'Upgraded' : `Upg $${GEAR_UPGRADE_COST}`,
+      () => this.upgradeGearType(item.key));
+
+    const canBuy = this.money >= GEAR_BUY_UNIT_COST;
+    addButton(3, canBuy, COLOR_TEAL, `Buy $${GEAR_BUY_UNIT_COST}`, () => this.buyGearUnit(item.key));
 
     return objects;
   }
 
   renderEquipment() {
     this.clearEquipmentList();
-    let y = SAFE_TOP + 40;
+    let y = SAFE_TOP + 30;
 
-    const intro = this.add.text(GAME_WIDTH / 2, y,
-      'Rented gear wears with use. Rinse it after a dive, pay to fix it up, or upgrade it to wear slower.', {
-        fontFamily: 'sans-serif',
-        fontSize: '12px',
-        color: COLOR_TEXT_DIM,
-        align: 'center',
-        wordWrap: { width: GAME_WIDTH - 64 },
-      }).setOrigin(0.5, 0);
+    const intro = this.add.text(GAME_WIDTH / 2, y, 'Rinse gear before it can be rented again.', {
+      fontFamily: 'sans-serif',
+      fontSize: '12px',
+      color: COLOR_TEXT_DIM,
+      align: 'center',
+    }).setOrigin(0.5, 0);
     this.equipmentListObjects.push(intro);
-    y += 40;
+    y += 26;
 
-    const rowHeight = 112;
-    const rowGap = 8;
+    const rowHeight = 106;
+    const rowGap = 6;
     for (const item of RENTAL_ITEMS) {
       this.equipmentListObjects.push(...this.buildGearRow(item, y));
       y += rowHeight + rowGap;
@@ -962,12 +1072,14 @@ class MainScene extends Phaser.Scene {
   }
 
   finalizeDispatch(customers, diveCount) {
-    // Snapshot the payout factor before this trip's wear is applied, so the price reflects
-    // the gear condition the customers actually dove with.
+    // Snapshot the payout factor from the gear's condition at check-out time, so the price
+    // reflects what the customers actually dove with (wear/rinsing happens on return).
     const payoutFactor = customers.length > 0
       ? customers.reduce((sum, c) => sum + this.customerPayoutFactor(c), 0) / customers.length
       : 1;
-    this.applyGearWear(customers);
+
+    // Guide is a cost, not free labor: a fixed fee per group plus a fee per dive in the trip.
+    this.money -= Math.round(GUIDE_COST_PER_GROUP + GUIDE_COST_PER_DIVE * diveCount);
 
     this.dispatchedGroups.push({
       id: this.nextGroupId++,
@@ -1011,6 +1123,7 @@ class MainScene extends Phaser.Scene {
     for (const group of returned) {
       const factor = group.payoutFactor ?? 1;
       this.money += Math.round(group.diveCount * group.customers.length * DIVE_PRICE_PER_DIVE * factor);
+      this.returnRentedGear(group.customers);
     }
     this.diveOpsDirty = true;
     this.equipmentDirty = true;
@@ -1183,6 +1296,15 @@ class MainScene extends Phaser.Scene {
     this.diveOpsListObjects.push(minusBtn, diveCountLabel, plusBtn);
     y = stepperY + 30;
 
+    const guideCost = Math.round(GUIDE_COST_PER_GROUP + GUIDE_COST_PER_DIVE * this.groupBuilder.diveCount);
+    const guideCostText = this.add.text(GAME_WIDTH / 2, y, `Guide cost: $${guideCost} (paid on dispatch)`, {
+      fontFamily: 'sans-serif',
+      fontSize: '11px',
+      color: COLOR_TEXT_DIM,
+    }).setOrigin(0.5);
+    this.diveOpsListObjects.push(guideCostText);
+    y += 20;
+
     // Dispatch button.
     const canDispatch = this.groupBuilder.customers.length >= MIN_GROUP_SIZE;
     const dispatchY = y + 24;
@@ -1271,6 +1393,14 @@ class MainScene extends Phaser.Scene {
       if (this.diveOpsRefreshAccumMs >= DIVE_OPS_REFRESH_MS) {
         this.diveOpsRefreshAccumMs = 0;
         this.diveOpsDirty = true;
+      }
+    }
+
+    if (this.activeTab === 'frontdesk' && this.totalMinutes < this.marketingBoostUntil) {
+      this.frontDeskRefreshAccumMs += deltaMs;
+      if (this.frontDeskRefreshAccumMs >= DIVE_OPS_REFRESH_MS) {
+        this.frontDeskRefreshAccumMs = 0;
+        this.frontDeskDirty = true;
       }
     }
 

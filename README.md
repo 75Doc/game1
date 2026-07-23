@@ -68,22 +68,27 @@ mobile, and claude.ai — so GitHub (`75Doc/game1`) is the source of truth:
 ## Status
 
 - **Front Desk**: a mix of pre-bookings (~85%) and walk-ins (~15%) arrive over
-  the day. Tapping a queue entry opens a check-in dialog — mark which gear
-  they own vs. need to rent (prices are rough real-world dive-shop rates);
-  rentals are charged immediately. Queued customers who wait too long
-  (a hidden per-customer patience timer) leave without checking in.
+  the day, checked in on the counter laptop. Tapping a queue entry opens a
+  check-in dialog — mark which gear they own vs. need to rent (prices are
+  rough real-world dive-shop rates, shown per-type along with how many clean
+  units are left); rentals are charged immediately, and a type with none
+  clean can't be rented until it's rinsed. Queued customers who wait too long
+  (a hidden per-customer patience timer) leave without checking in. A
+  **marketing campaign** ($100) can be run from here for an immediate burst
+  of walk-ins plus a 4-hour boosted walk-in rate.
 - **Dive Ops**: drag checked-in customers into a new group (1-6, guide is
-  automatic/unlimited for now), pick a dive count (1-3), dispatch. Dispatching
-  plays a little walk-to-car-and-drive-off animation; the group pays out
+  automatic but not free), pick a dive count (1-3), dispatch. The guide costs
+  a fixed fee plus a per-dive fee (each half a dive's price, so $55 for a
+  1-dive group), charged on dispatch regardless of outcome. Dispatching plays
+  a little walk-to-car-and-drive-off animation; the group pays out
   ($55/customer/dive — tanks/guide/boat, gear is billed separately at
   check-in) automatically when the car drives back on return.
-- **Equipment**: each rental gear type (mask & fins, wetsuit, BCD, regulator,
-  computer, weights) has its own condition (0-100%). Dispatching a group
-  wears every gear type its customers rented (not gear they already owned);
-  worn gear that wasn't rinsed since its last trip wears twice as fast next
-  time. Tap **Rinse** (free) after a trip to reset that and claw back a
-  little condition, **Fix** ($30) to fully restore it, or **Upgrade** ($150,
-  one-time per type) to permanently halve its wear rate. Condition isn't
-  just cosmetic — a dive where the customers' rented gear is worn down pays
-  out less (down to 60% of normal at 0% condition), so letting gear degrade
-  quietly costs money.
+- **Equipment**: the shop owns 10 physical units of each rental type (mask &
+  fins, wetsuit, BCD, regulator, dive computer, torch). Renting one out wears
+  it and leaves it dirty on return — it must be **rinsed** before it can go
+  out again, so running short on clean units blocks that rental at check-in.
+  **Fix** ($30) fully restores the single worst unit of a type; **Upgrade**
+  ($150, one-time per type) halves all its future wear but raises its rental
+  price 1.5x; **Buy** ($80) adds another physical unit to the pool. Condition
+  isn't just cosmetic — a dive on worn rented gear pays out less (down to 60%
+  of normal at 0% condition), so neglecting equipment costs money.
