@@ -77,6 +77,13 @@ mobile, and claude.ai — so GitHub (`75Doc/game1`) is the source of truth:
   plays a little walk-to-car-and-drive-off animation; the group pays out
   ($55/customer/dive — tanks/guide/boat, gear is billed separately at
   check-in) automatically when the car drives back on return.
-- **Equipment**: not implemented yet — placeholder tab. Per-customer gear
-  wear, rinse bonus, maintenance, and upgrades (building on the rentals
-  already recorded at check-in) are the next feature.
+- **Equipment**: each rental gear type (mask & fins, wetsuit, BCD, regulator,
+  computer, weights) has its own condition (0-100%). Dispatching a group
+  wears every gear type its customers rented (not gear they already owned);
+  worn gear that wasn't rinsed since its last trip wears twice as fast next
+  time. Tap **Rinse** (free) after a trip to reset that and claw back a
+  little condition, **Fix** ($30) to fully restore it, or **Upgrade** ($150,
+  one-time per type) to permanently halve its wear rate. Condition isn't
+  just cosmetic — a dive where the customers' rented gear is worn down pays
+  out less (down to 60% of normal at 0% condition), so letting gear degrade
+  quietly costs money.
