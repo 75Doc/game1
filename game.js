@@ -12,12 +12,16 @@ const GAME_HEIGHT = 956;
 
 const SAFE_TOP = 140; // Reserved space at the top for the Dynamic Island + header
 
-const COLOR_BG = 0x0b2733;      // Deep water background
-const COLOR_PANEL = 0x123847;   // Panel/card background
-const COLOR_CARD = 0x184a5c;    // Queue card background
-const COLOR_ACCENT = 0x2fb6c9;  // Active tab / highlight
-const COLOR_TEXT = '#e8f4f6';
-const COLOR_TEXT_DIM = '#7fa6ae';
+// Flat, warm dive-shop palette (sandy cream + teal signage + coral accents).
+const COLOR_BG = 0xfbf3e0;
+const COLOR_TEAL = 0x1f8a82;
+const COLOR_TEAL_DARK = 0x156b64;
+const COLOR_CORAL = 0xf2905e;
+const COLOR_CARD = 0xffffff;
+const COLOR_CARD_ALT = 0xf6ead2;
+const COLOR_TEXT = '#22322f';
+const COLOR_TEXT_DIM = '#6f8a84';
+const COLOR_TEXT_ON_ACCENT = '#ffffff';
 
 // --- Game clock ---------------------------------------------------------------
 // A business day runs 08:00 -> 23:00 at normal pace, then 23:00 -> 08:00 fast-
@@ -130,6 +134,7 @@ class MainScene extends Phaser.Scene {
     }).setOrigin(0.5);
 
     this.buildTabBar();
+    this.buildWaveDivider(SAFE_TOP + 24);
 
     this.panelContent = this.add.text(GAME_WIDTH / 2, SAFE_TOP + 120, '', {
       fontFamily: 'sans-serif',
@@ -139,11 +144,88 @@ class MainScene extends Phaser.Scene {
       wordWrap: { width: GAME_WIDTH - 80 },
     }).setOrigin(0.5, 0);
 
+    this.diveOpsDecor = this.buildDiveOpsDecor();
+
     // Generate today's bookings up front since the game opens mid-day-1 at 08:00.
     this.generateBookingsForToday();
 
     this.setActiveTab(this.activeTab);
     this.refreshHeader();
+  }
+
+  // --- Shared flat-vector helpers ----------------------------------------------
+
+  /** A rounded-rect "card" as a Container, so children can be added at local (0,0)-relative coords. */
+  createCard(x, y, w, h, fillColor, strokeColor = COLOR_TEAL, radius = 14) {
+    const g = this.add.graphics();
+    const redraw = (fill, stroke) => {
+      g.clear();
+      g.fillStyle(fill, 1);
+      g.fillRoundedRect(-w / 2, -h / 2, w, h, radius);
+      g.lineStyle(2, stroke, 1);
+      g.strokeRoundedRect(-w / 2, -h / 2, w, h, radius);
+    };
+    redraw(fillColor, strokeColor);
+
+    const container = this.add.container(x, y, [g]);
+    container.setSize(w, h);
+    container.redrawCard = redraw;
+    return container;
+  }
+
+  /** A small colored circle with an initial, added as children of an existing card container. */
+  addAvatar(container, localX, letter, color) {
+    const circle = this.add.circle(localX, 0, 15, color);
+    const label = this.add.text(localX, 0, letter.toUpperCase(), {
+      fontFamily: 'sans-serif',
+      fontSize: '13px',
+      fontStyle: 'bold',
+      color: '#ffffff',
+    }).setOrigin(0.5);
+    container.add([circle, label]);
+  }
+
+  buildWaveDivider(y) {
+    const g = this.add.graphics();
+    g.fillStyle(COLOR_TEAL, 0.35);
+    for (let x = 12; x <= GAME_WIDTH; x += 22) {
+      g.fillCircle(x, y, 5);
+    }
+    return g;
+  }
+
+  /** Simple dock + boat silhouette, anchored near the bottom of the canvas. Dive Ops only. */
+  buildDiveOpsDecor() {
+    const g = this.add.graphics();
+    const baseY = 880;
+
+    // Water band with a few pale wave dots along the top edge.
+    g.fillStyle(0xcfe9e6, 1);
+    g.fillRect(0, baseY, GAME_WIDTH, GAME_HEIGHT - baseY);
+    g.fillStyle(0xffffff, 0.6);
+    for (let x = 10; x < GAME_WIDTH; x += 28) {
+      g.fillCircle(x, baseY + 4, 5);
+    }
+
+    // Dock: two posts + a plank.
+    g.fillStyle(0x8a6b4f, 1);
+    g.fillRect(40, baseY - 30, 10, 40);
+    g.fillRect(90, baseY - 30, 10, 40);
+    g.fillRect(30, baseY - 38, 80, 10);
+
+    // Boat: hull, bow, cabin, small flag.
+    g.fillStyle(COLOR_CORAL, 1);
+    g.fillRect(210, baseY - 6, 110, 24);
+    g.fillTriangle(320, baseY - 6, 320, baseY + 18, 345, baseY + 6);
+    g.fillStyle(0xffffff, 1);
+    g.fillRect(235, baseY - 24, 45, 18);
+    g.fillStyle(COLOR_TEAL, 1);
+    g.fillRect(255, baseY - 40, 3, 16);
+    g.fillTriangle(258, baseY - 40, 258, baseY - 32, 272, baseY - 36);
+
+    const container = this.add.container(0, 0, [g]);
+    container.setVisible(false);
+    return container;
   }
 
   buildTabBar() {
@@ -152,18 +234,19 @@ class MainScene extends Phaser.Scene {
 
     this.tabButtons = TABS.map((tab, i) => {
       const x = 16 + tabWidth * i + tabWidth / 2;
-      const bg = this.add.rectangle(x, barY, tabWidth - 8, 40, COLOR_PANEL)
-        .setStrokeStyle(1, 0x1c4a5a)
-        .setInteractive({ useHandCursor: true });
-      const label = this.add.text(x, barY, tab.label, {
+      const container = this.createCard(x, barY, tabWidth - 8, 40, COLOR_CARD, COLOR_TEAL, 10);
+      container.setInteractive({ useHandCursor: true });
+
+      const label = this.add.text(0, 0, tab.label, {
         fontFamily: 'sans-serif',
         fontSize: '13px',
         color: COLOR_TEXT_DIM,
       }).setOrigin(0.5);
+      container.add(label);
 
-      bg.on('pointerdown', () => this.setActiveTab(tab.key));
+      container.on('pointerdown', () => this.setActiveTab(tab.key));
 
-      return { key: tab.key, bg, label };
+      return { key: tab.key, container, label };
     });
   }
 
@@ -171,14 +254,15 @@ class MainScene extends Phaser.Scene {
     this.activeTab = key;
     for (const btn of this.tabButtons) {
       const active = btn.key === key;
-      btn.bg.setFillStyle(active ? COLOR_ACCENT : COLOR_PANEL);
-      btn.label.setColor(active ? '#08222b' : COLOR_TEXT_DIM);
+      btn.container.redrawCard(active ? COLOR_TEAL : COLOR_CARD, COLOR_TEAL);
+      btn.label.setColor(active ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM);
     }
 
     // Tear down whichever tab's dynamic content was showing, then build the new one.
     this.clearFrontDeskList();
     this.clearDiveOpsList();
     this.panelContent.setText('');
+    this.diveOpsDecor.setVisible(key === 'diveops');
 
     if (key === 'frontdesk') {
       this.frontDeskDirty = true;
@@ -261,6 +345,33 @@ class MainScene extends Phaser.Scene {
     this.frontDeskListObjects = [];
   }
 
+  buildQueueCard(customer, topY) {
+    const w = GAME_WIDTH - 32;
+    const h = 56;
+    const container = this.createCard(GAME_WIDTH / 2, topY + h / 2, w, h, COLOR_CARD, COLOR_TEAL, 14);
+    container.setInteractive({ useHandCursor: true });
+    container.on('pointerdown', () => this.checkInCustomer(customer.id));
+
+    const avatarColor = customer.source === 'booking' ? COLOR_TEAL : COLOR_CORAL;
+    this.addAvatar(container, -(w / 2) + 30, customer.name[0], avatarColor);
+
+    const nameText = this.add.text(-(w / 2) + 56, 0, customer.name, {
+      fontFamily: 'sans-serif',
+      fontSize: '15px',
+      color: COLOR_TEXT,
+    }).setOrigin(0, 0.5);
+
+    const tag = customer.source === 'booking' ? 'Booking' : 'Walk-in';
+    const detailText = this.add.text(w / 2 - 16, 0, `${tag}  •  ${customer.diveCount} dive${customer.diveCount > 1 ? 's' : ''}`, {
+      fontFamily: 'sans-serif',
+      fontSize: '12px',
+      color: COLOR_TEXT_DIM,
+    }).setOrigin(1, 0.5);
+
+    container.add([nameText, detailText]);
+    return container;
+  }
+
   renderFrontDesk() {
     this.clearFrontDeskList();
 
@@ -297,26 +408,7 @@ class MainScene extends Phaser.Scene {
     const cardGap = 8;
 
     for (const customer of shown) {
-      const cardY = y + cardHeight / 2;
-      const card = this.add.rectangle(GAME_WIDTH / 2, cardY, GAME_WIDTH - 32, cardHeight, COLOR_CARD)
-        .setStrokeStyle(1, 0x1c4a5a)
-        .setInteractive({ useHandCursor: true });
-      card.on('pointerdown', () => this.checkInCustomer(customer.id));
-
-      const nameText = this.add.text(32, cardY, customer.name, {
-        fontFamily: 'sans-serif',
-        fontSize: '15px',
-        color: COLOR_TEXT,
-      }).setOrigin(0, 0.5);
-
-      const tag = customer.source === 'booking' ? 'Booking' : 'Walk-in';
-      const detailText = this.add.text(GAME_WIDTH - 32, cardY, `${tag}  •  ${customer.diveCount} dive${customer.diveCount > 1 ? 's' : ''}`, {
-        fontFamily: 'sans-serif',
-        fontSize: '12px',
-        color: COLOR_TEXT_DIM,
-      }).setOrigin(1, 0.5);
-
-      this.frontDeskListObjects.push(card, nameText, detailText);
+      this.frontDeskListObjects.push(this.buildQueueCard(customer, y));
       y += cardHeight + cardGap;
     }
 
@@ -415,30 +507,57 @@ class MainScene extends Phaser.Scene {
   }
 
   makePoolCard(customer, x, y) {
-    const cardWidth = GAME_WIDTH - 32;
-    const cardHeight = 48;
+    const w = GAME_WIDTH - 32;
+    const h = 48;
+    const container = this.createCard(x, y, w, h, COLOR_CARD, COLOR_TEAL, 12);
+    container.setInteractive({ useHandCursor: true, draggable: true });
+    this.input.setDraggable(container);
 
-    const rect = this.add.rectangle(0, 0, cardWidth, cardHeight, COLOR_CARD).setStrokeStyle(1, 0x1c4a5a);
-    const nameText = this.add.text(-(cardWidth / 2 - 16), 0, customer.name, {
+    const avatarColor = customer.source === 'booking' ? COLOR_TEAL : COLOR_CORAL;
+    this.addAvatar(container, -(w / 2) + 26, customer.name[0], avatarColor);
+
+    const nameText = this.add.text(-(w / 2) + 50, 0, customer.name, {
       fontFamily: 'sans-serif',
       fontSize: '14px',
       color: COLOR_TEXT,
     }).setOrigin(0, 0.5);
-    const detailText = this.add.text(cardWidth / 2 - 16, 0, `wants ${customer.diveCount}`, {
+    const detailText = this.add.text(w / 2 - 16, 0, `wants ${customer.diveCount}`, {
       fontFamily: 'sans-serif',
       fontSize: '12px',
       color: COLOR_TEXT_DIM,
     }).setOrigin(1, 0.5);
+    container.add([nameText, detailText]);
 
-    const container = this.add.container(x, y, [rect, nameText, detailText]);
-    container.setSize(cardWidth, cardHeight);
-    container.setInteractive({ useHandCursor: true, draggable: true });
-    this.input.setDraggable(container);
     container.on('drag', (_pointer, dragX, dragY) => {
       container.x = dragX;
       container.y = dragY;
     });
     container.on('dragend', (pointer) => this.handlePoolCardDrop(customer, pointer));
+
+    return container;
+  }
+
+  makeStagingChip(customer, topY) {
+    const w = GAME_WIDTH - 32;
+    const h = 36;
+    const container = this.createCard(GAME_WIDTH / 2, topY + h / 2, w, h, COLOR_CARD_ALT, COLOR_TEAL, 10);
+    container.setInteractive({ useHandCursor: true });
+    container.on('pointerdown', () => this.removeFromGroupBuilder(customer.id));
+
+    const avatarColor = customer.source === 'booking' ? COLOR_TEAL : COLOR_CORAL;
+    this.addAvatar(container, -(w / 2) + 22, customer.name[0], avatarColor);
+
+    const nameText = this.add.text(-(w / 2) + 44, 0, `${customer.name} (wants ${customer.diveCount})`, {
+      fontFamily: 'sans-serif',
+      fontSize: '13px',
+      color: COLOR_TEXT,
+    }).setOrigin(0, 0.5);
+    const removeText = this.add.text(w / 2 - 16, 0, 'tap to remove', {
+      fontFamily: 'sans-serif',
+      fontSize: '11px',
+      color: COLOR_TEXT_DIM,
+    }).setOrigin(1, 0.5);
+    container.add([nameText, removeText]);
 
     return container;
   }
@@ -520,66 +639,52 @@ class MainScene extends Phaser.Scene {
     } else {
       const chipHeight = 36;
       for (const customer of this.groupBuilder.customers) {
-        const chipY = y + chipHeight / 2;
-        const chip = this.add.rectangle(GAME_WIDTH / 2, chipY, GAME_WIDTH - 32, chipHeight, COLOR_PANEL)
-          .setStrokeStyle(1, 0x1c4a5a)
-          .setInteractive({ useHandCursor: true });
-        chip.on('pointerdown', () => this.removeFromGroupBuilder(customer.id));
-
-        const chipName = this.add.text(32, chipY, `${customer.name}  (wants ${customer.diveCount})`, {
-          fontFamily: 'sans-serif',
-          fontSize: '13px',
-          color: COLOR_TEXT,
-        }).setOrigin(0, 0.5);
-        const chipRemove = this.add.text(GAME_WIDTH - 32, chipY, 'tap to remove', {
-          fontFamily: 'sans-serif',
-          fontSize: '11px',
-          color: COLOR_TEXT_DIM,
-        }).setOrigin(1, 0.5);
-
-        this.diveOpsListObjects.push(chip, chipName, chipRemove);
+        this.diveOpsListObjects.push(this.makeStagingChip(customer, y));
         y += chipHeight + 6;
       }
     }
 
     // Stepper: how many dives this group's trip covers.
     const stepperY = y + 16;
-    const minusBtn = this.add.rectangle(GAME_WIDTH / 2 - 60, stepperY, 36, 32, COLOR_PANEL)
-      .setStrokeStyle(1, 0x1c4a5a).setInteractive({ useHandCursor: true });
+    const minusBtn = this.createCard(GAME_WIDTH / 2 - 60, stepperY, 36, 32, COLOR_CARD, COLOR_TEAL, 8);
+    minusBtn.setInteractive({ useHandCursor: true });
     minusBtn.on('pointerdown', () => this.adjustGroupDiveCount(-1));
-    const minusLabel = this.add.text(GAME_WIDTH / 2 - 60, stepperY, '-', {
+    const minusLabel = this.add.text(0, 0, '-', {
       fontFamily: 'sans-serif', fontSize: '18px', color: COLOR_TEXT,
     }).setOrigin(0.5);
+    minusBtn.add(minusLabel);
 
     const diveCountLabel = this.add.text(GAME_WIDTH / 2, stepperY, `${this.groupBuilder.diveCount} dive${this.groupBuilder.diveCount > 1 ? 's' : ''}`, {
       fontFamily: 'sans-serif', fontSize: '14px', color: COLOR_TEXT,
     }).setOrigin(0.5);
 
-    const plusBtn = this.add.rectangle(GAME_WIDTH / 2 + 60, stepperY, 36, 32, COLOR_PANEL)
-      .setStrokeStyle(1, 0x1c4a5a).setInteractive({ useHandCursor: true });
+    const plusBtn = this.createCard(GAME_WIDTH / 2 + 60, stepperY, 36, 32, COLOR_CARD, COLOR_TEAL, 8);
+    plusBtn.setInteractive({ useHandCursor: true });
     plusBtn.on('pointerdown', () => this.adjustGroupDiveCount(1));
-    const plusLabel = this.add.text(GAME_WIDTH / 2 + 60, stepperY, '+', {
+    const plusLabel = this.add.text(0, 0, '+', {
       fontFamily: 'sans-serif', fontSize: '18px', color: COLOR_TEXT,
     }).setOrigin(0.5);
+    plusBtn.add(plusLabel);
 
-    this.diveOpsListObjects.push(minusBtn, minusLabel, diveCountLabel, plusBtn, plusLabel);
+    this.diveOpsListObjects.push(minusBtn, diveCountLabel, plusBtn);
     y = stepperY + 30;
 
     // Dispatch button.
     const canDispatch = this.groupBuilder.customers.length >= MIN_GROUP_SIZE;
     const dispatchY = y + 24;
-    const dispatchBtn = this.add.rectangle(GAME_WIDTH / 2, dispatchY, GAME_WIDTH - 32, 44, canDispatch ? COLOR_ACCENT : COLOR_PANEL)
-      .setStrokeStyle(1, 0x1c4a5a);
+    const dispatchBtn = this.createCard(GAME_WIDTH / 2, dispatchY, GAME_WIDTH - 32, 44,
+      canDispatch ? COLOR_TEAL : COLOR_CARD_ALT, COLOR_TEAL, 14);
     if (canDispatch) {
       dispatchBtn.setInteractive({ useHandCursor: true });
       dispatchBtn.on('pointerdown', () => this.dispatchGroup());
     }
-    const dispatchLabel = this.add.text(GAME_WIDTH / 2, dispatchY, 'Dispatch group', {
+    const dispatchLabel = this.add.text(0, 0, 'Dispatch group', {
       fontFamily: 'sans-serif',
       fontSize: '14px',
-      color: canDispatch ? '#08222b' : COLOR_TEXT_DIM,
+      color: canDispatch ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
     }).setOrigin(0.5);
-    this.diveOpsListObjects.push(dispatchBtn, dispatchLabel);
+    dispatchBtn.add(dispatchLabel);
+    this.diveOpsListObjects.push(dispatchBtn);
     y = dispatchY + 40;
 
     // The staging drop zone covers everything from the label down to the dispatch button.
@@ -670,7 +775,7 @@ new Phaser.Game({
   parent: 'game',
   width: GAME_WIDTH,
   height: GAME_HEIGHT,
-  backgroundColor: '#0b2733',
+  backgroundColor: '#fbf3e0',
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
