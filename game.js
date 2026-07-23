@@ -91,11 +91,14 @@ const GEAR_BUY_UNIT_COST = 80;          // buy one more physical unit of a gear 
 const GEAR_MIN_PAYOUT_FACTOR = 0.6;     // revenue multiplier for a dive on fully-worn rented gear
 
 // --- Marketing: a paid campaign that temporarily boosts walk-in traffic ----
+// Running a campaign always costs MARKETING_COST; its strength depends on the campaign's
+// level, a one-time permanent upgrade (like Equipment's Upgrade) bought with MARKETING_LEVEL_UPGRADE_COST.
 const MARKETING_COST = 100;
-const MARKETING_BOOST_MINUTES = 240;          // how long the boosted walk-in rate lasts
-const MARKETING_WALKIN_GAP_MULTIPLIER = 0.4;  // walk-ins arrive ~2.5x more often while boosted
-const MARKETING_INSTANT_WALKINS_MIN = 2;      // immediate walk-in burst when the campaign launches
-const MARKETING_INSTANT_WALKINS_MAX = 4;
+const MARKETING_LEVELS = [
+  { boostMinutes: 240, gapMultiplier: 0.4, burstMin: 2, burstMax: 4 },   // level 1 (starting)
+  { boostMinutes: 360, gapMultiplier: 0.22, burstMin: 4, burstMax: 7 },  // level 2
+];
+const MARKETING_LEVEL_UPGRADE_COST = 300;
 
 // --- Dive ops: group assembly & dispatch ---------------------------------------
 const MIN_GROUP_SIZE = 1;
@@ -217,6 +220,7 @@ class MainScene extends Phaser.Scene {
     this.stagingChipObjects = [];
     this.stagingChipPositions = []; // [{ x, y, source }] snapshot for the walk animation
     this.dispatchBtnRef = null;
+    this.poolCardDragging = false; // true mid-drag, so the periodic re-render doesn't tear it down
 
     this.dialogObjects = [];
     this.checkInDialogState = null; // { customer, rentals: Set<string> }
@@ -237,6 +241,7 @@ class MainScene extends Phaser.Scene {
     this.equipmentListObjects = [];
 
     this.marketingBoostUntil = 0; // totalMinutes until which walk-ins arrive more often
+    this.marketingLevel = 1; // one-time-upgradeable: higher levels boost harder and longer
   }
 
   create() {
@@ -508,21 +513,31 @@ class MainScene extends Phaser.Scene {
     if (this.walkInTimer <= 0) {
       this.spawnWalkIn();
       const boosted = this.totalMinutes < this.marketingBoostUntil;
-      const marketingMultiplier = boosted ? MARKETING_WALKIN_GAP_MULTIPLIER : 1;
+      const marketingMultiplier = boosted ? MARKETING_LEVELS[this.marketingLevel - 1].gapMultiplier : 1;
       const hourMultiplier = isHotHour(this.totalMinutes) ? 1 : WALKIN_COLD_HOUR_GAP_MULTIPLIER;
       this.walkInTimer = randomBetween(WALKIN_MIN_GAP, WALKIN_MAX_GAP) * marketingMultiplier * hourMultiplier;
     }
   }
 
   /** Launches a paid marketing campaign: an immediate burst of walk-ins, then a boosted
-   *  walk-in rate for a while. */
+   *  walk-in rate for a while. Strength scales with the campaign's (upgradeable) level. */
   runMarketingCampaign() {
     if (this.totalMinutes < this.marketingBoostUntil) return; // already running
     if (this.money < MARKETING_COST) return;
     this.money -= MARKETING_COST;
-    this.marketingBoostUntil = this.totalMinutes + MARKETING_BOOST_MINUTES;
-    const burst = Math.floor(randomBetween(MARKETING_INSTANT_WALKINS_MIN, MARKETING_INSTANT_WALKINS_MAX + 1));
+    const level = MARKETING_LEVELS[this.marketingLevel - 1];
+    this.marketingBoostUntil = this.totalMinutes + level.boostMinutes;
+    const burst = Math.floor(randomBetween(level.burstMin, level.burstMax + 1));
     for (let i = 0; i < burst; i++) this.spawnWalkIn();
+    this.frontDeskDirty = true;
+  }
+
+  /** One-time permanent upgrade: makes every future campaign run stronger and longer. */
+  upgradeMarketingLevel() {
+    if (this.marketingLevel >= MARKETING_LEVELS.length) return;
+    if (this.money < MARKETING_LEVEL_UPGRADE_COST) return;
+    this.money -= MARKETING_LEVEL_UPGRADE_COST;
+    this.marketingLevel += 1;
     this.frontDeskDirty = true;
   }
 
@@ -769,6 +784,7 @@ class MainScene extends Phaser.Scene {
 
     const boosted = this.totalMinutes < this.marketingBoostUntil;
     const canRunCampaign = !boosted && this.money >= MARKETING_COST;
+    const atMaxLevel = this.marketingLevel >= MARKETING_LEVELS.length;
     const campaignBtn = this.createCard(GAME_WIDTH / 2, y + 18, GAME_WIDTH - 32, 36,
       boosted ? COLOR_CARD_ALT : (canRunCampaign ? COLOR_TEAL : COLOR_CARD_ALT), COLOR_TEAL, 10);
     if (canRunCampaign) {
@@ -776,15 +792,33 @@ class MainScene extends Phaser.Scene {
       campaignBtn.on('pointerdown', () => this.runMarketingCampaign());
     }
     const campaignLabel = boosted
-      ? `📣 Campaign running — ${Math.ceil(this.marketingBoostUntil - this.totalMinutes)}m left`
-      : `📣 Run marketing campaign ($${MARKETING_COST})`;
+      ? `📣 Campaign running (L${this.marketingLevel}) — ${Math.ceil(this.marketingBoostUntil - this.totalMinutes)}m left`
+      : `📣 Run marketing campaign L${this.marketingLevel} ($${MARKETING_COST})`;
     campaignBtn.add(this.add.text(0, 0, campaignLabel, {
       fontFamily: 'sans-serif',
       fontSize: '12px',
       color: boosted ? COLOR_TEXT_DIM : (canRunCampaign ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM),
     }).setOrigin(0.5));
     this.frontDeskListObjects.push(campaignBtn);
-    y += 46;
+    y += 40;
+
+    if (!atMaxLevel) {
+      const canUpgradeLevel = this.money >= MARKETING_LEVEL_UPGRADE_COST;
+      const upgradeBtn = this.createCard(GAME_WIDTH / 2, y + 15, GAME_WIDTH - 32, 30,
+        canUpgradeLevel ? COLOR_CORAL : COLOR_CARD_ALT, COLOR_TEAL, 8);
+      if (canUpgradeLevel) {
+        upgradeBtn.setInteractive({ useHandCursor: true });
+        upgradeBtn.on('pointerdown', () => this.upgradeMarketingLevel());
+      }
+      upgradeBtn.add(this.add.text(0, 0,
+        `⬆️ Upgrade campaign to L${this.marketingLevel + 1} ($${MARKETING_LEVEL_UPGRADE_COST})`, {
+          fontFamily: 'sans-serif',
+          fontSize: '11px',
+          color: canUpgradeLevel ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
+        }).setOrigin(0.5));
+      this.frontDeskListObjects.push(upgradeBtn);
+      y += 36;
+    }
 
     const queueLabel = this.add.text(24, y, `Queue (${this.queue.length})`, {
       fontFamily: 'sans-serif',
@@ -1233,11 +1267,15 @@ class MainScene extends Phaser.Scene {
     }).setOrigin(1, 0.5);
     container.add([nameText, detailText]);
 
+    container.on('dragstart', () => { this.poolCardDragging = true; });
     container.on('drag', (_pointer, dragX, dragY) => {
       container.x = dragX;
       container.y = dragY;
     });
-    container.on('dragend', (pointer) => this.handlePoolCardDrop(customer, pointer));
+    container.on('dragend', (pointer) => {
+      this.poolCardDragging = false;
+      this.handlePoolCardDrop(customer, pointer);
+    });
 
     return container;
   }
@@ -1487,7 +1525,11 @@ class MainScene extends Phaser.Scene {
     this.updateQueuePatience(deltaGameMinutes);
     this.updateDiveReturns();
 
-    if (this.activeTab === 'diveops' && this.dispatchedGroups.length > 0) {
+    // Skip the tick while a pool card is mid-drag: tearing down and rebuilding the pool here
+    // would destroy the dragged container before its dragend fires, silently swallowing the
+    // drop. handlePoolCardDrop already marks diveOpsDirty once the drag finishes, so the
+    // "back in Xm" timers catch up right after.
+    if (this.activeTab === 'diveops' && this.dispatchedGroups.length > 0 && !this.poolCardDragging) {
       this.diveOpsRefreshAccumMs += deltaMs;
       if (this.diveOpsRefreshAccumMs >= DIVE_OPS_REFRESH_MS) {
         this.diveOpsRefreshAccumMs = 0;
