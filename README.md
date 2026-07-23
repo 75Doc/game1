@@ -44,6 +44,16 @@ Primary test device: **iPhone 16 Pro Max**. The game's design resolution
 (440x956 in `game.js`) and safe-area offsets are tuned for it; Phaser's
 `Scale.FIT` keeps it proportional on other screens.
 
+## Live preview (works anywhere, no LAN/PC required)
+
+**https://dive-center-tycoon.vercel.app**
+
+This is a Vercel project imported from this GitHub repo (`75Doc/game1`, `main`
+branch, team **Doc75**), so it **auto-deploys on every push to `main`** — no
+manual redeploy step needed from any device. Use this URL to test on the
+iPhone from anywhere (not tied to being on the home Wi-Fi or the PC being on);
+use the LAN dev server above when you want live changes without pushing first.
+
 ## Working across devices
 
 This project gets worked on from multiple places — this desktop, Claude Code on
@@ -57,6 +67,9 @@ mobile, and claude.ai — so GitHub (`75Doc/game1`) is the source of truth:
 
 ## Status
 
-Early scaffold: day/night clock and a 3-tab shell (Front Desk / Dive Ops /
-Equipment) are in place as placeholders. Core loop (customers, group assembly,
-dispatch, gear wear/rinse/upgrade, economy) is not implemented yet.
+- **Front Desk**: walk-in and pre-booking queue, tap to check a customer in.
+- **Dive Ops**: drag checked-in customers into a new group (1-6, guide is
+  automatic/unlimited for now), pick a dive count (1-3), dispatch, and it pays
+  out automatically on return.
+- **Equipment**: not implemented yet — placeholder tab. Per-customer gear
+  wear, rinse bonus, maintenance, and upgrades are the next feature.
