@@ -73,9 +73,11 @@ mobile, and claude.ai — so GitHub (`75Doc/game1`) is the source of truth:
   draw about 70% of both bookings and walk-ins, the rest trickle in across
   the remaining open hours. Tapping a queue entry opens a check-in dialog —
   mark which gear they own vs. need to rent (prices are rough real-world
-  dive-shop rates, shown per-type along with how many clean units are left);
-  rentals are charged immediately, and a type with none clean can't be
-  rented until it's rinsed. Queued customers who wait too long (a hidden
+  dive-shop rates, shown per-type along with how many clean units are left),
+  or tap **Rent all available gear** to rent everything in one go (tap again
+  to un-rent it all); rentals are charged immediately, and a type with none
+  clean can't be rented until it's rinsed. Queued customers who wait too
+  long (a hidden
   per-customer patience timer) leave without checking in — their card
   flashes coral with a "Leaving soon!" warning once their patience is
   running low. A **marketing campaign** (always $100 to run) can be launched

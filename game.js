@@ -597,6 +597,20 @@ class MainScene extends Phaser.Scene {
     this.renderCheckInDialog();
   }
 
+  /** Rents every gear type that currently has a clean unit available, in one tap. Tapping
+   *  again while everything rentable is already rented un-rents it all instead. */
+  toggleRentAll() {
+    const { rentals } = this.checkInDialogState;
+    const rentableItems = RENTAL_ITEMS.filter((item) => this.availableUnits(item.key).length > 0);
+    if (rentableItems.length === 0) return;
+    const allRented = rentableItems.every((item) => rentals.has(item.key));
+    for (const item of rentableItems) {
+      if (allRented) rentals.delete(item.key);
+      else rentals.add(item.key);
+    }
+    this.renderCheckInDialog();
+  }
+
   confirmCheckIn() {
     const { customer, rentals } = this.checkInDialogState;
     const rentalUnits = {};
@@ -627,7 +641,7 @@ class MainScene extends Phaser.Scene {
 
     const rowHeight = 38;
     const panelWidth = GAME_WIDTH - 48;
-    const panelHeight = 96 + RENTAL_ITEMS.length * rowHeight + 74;
+    const panelHeight = 96 + 40 + RENTAL_ITEMS.length * rowHeight + 74;
     const panelX = GAME_WIDTH / 2;
     const panelY = GAME_HEIGHT / 2;
     const panelTop = panelY - panelHeight / 2;
@@ -654,6 +668,26 @@ class MainScene extends Phaser.Scene {
     }).setOrigin(0.5, 0);
     this.dialogObjects.push(subtitle);
     y += 32;
+
+    const rentableItems = RENTAL_ITEMS.filter((item) => this.availableUnits(item.key).length > 0);
+    const allRented = rentableItems.length > 0 && rentableItems.every((item) => rentals.has(item.key));
+    const canToggleAll = rentableItems.length > 0;
+    const rentAllBtn = this.createCard(panelX, y + 15, panelWidth - 40, 30,
+      canToggleAll ? (allRented ? COLOR_CARD_ALT : COLOR_TEAL) : COLOR_CARD_ALT, COLOR_TEAL, 10);
+    if (canToggleAll) {
+      rentAllBtn.setInteractive({ useHandCursor: true });
+      rentAllBtn.on('pointerdown', () => this.toggleRentAll());
+    }
+    const rentAllText = !canToggleAll
+      ? 'Nothing clean to rent'
+      : (allRented ? 'Un-rent all' : '🛍️ Rent all available gear');
+    rentAllBtn.add(this.add.text(0, 0, rentAllText, {
+      fontFamily: 'sans-serif',
+      fontSize: '12px',
+      color: (canToggleAll && !allRented) ? COLOR_TEXT_ON_ACCENT : COLOR_TEXT_DIM,
+    }).setOrigin(0.5));
+    this.dialogObjects.push(rentAllBtn);
+    y += 40;
 
     for (const item of RENTAL_ITEMS) {
       const renting = rentals.has(item.key);
